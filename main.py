@@ -24,7 +24,12 @@ from shapely.geometry import Polygon
 from osgeo import gdal, osr
 import rasterio
 from skimage import measure
-
+from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt5.QtCore import QUrl
+import json
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextEdit
 
 def euclidean_dist(point1, point2):
     return np.sqrt((point1[0] - point2[0])**2 + (point1[1] - point2[1])**2)
@@ -66,6 +71,63 @@ def a_star(costs, start, end):
     path.reverse()
     return path
 
+class PrecisionRecallDialog(QDialog):
+    def __init__(self, parent=None, canny_data=None, sobel_data=None, shearlet_data=None):
+        super().__init__(parent)
+        self.setWindowTitle("Precision and Recall Metrics")
+        self.setGeometry(100, 100, 800, 600)
+
+        layout = QVBoxLayout()
+
+        # Create the plot
+        self.figure, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(8, 10))
+        self.canvas = FigureCanvas(self.figure)
+        layout.addWidget(self.canvas)
+
+        # Create a text area for detailed information
+        self.text_area = QTextEdit()
+        self.text_area.setReadOnly(True)
+        layout.addWidget(self.text_area)
+
+        self.setLayout(layout)
+
+        self.plot_data(canny_data, sobel_data, shearlet_data)
+
+    def plot_data(self, canny_data, sobel_data, shearlet_data):
+        filters = ['Canny', 'Sobel', 'Shearlet']
+        precisions = [canny_data['precision'], sobel_data['precision'], shearlet_data['precision']]
+        recalls = [canny_data['recall'], sobel_data['recall'], shearlet_data['recall']]
+
+        # Precision plot
+        self.ax1.bar(filters, precisions, color=['blue', 'green', 'red'], alpha=0.7)
+        self.ax1.set_ylabel('Precision')
+        self.ax1.set_title('Precision by Filter')
+        self.ax1.set_ylim(0, 1)
+
+        # Recall plot
+        self.ax2.bar(filters, recalls, color=['blue', 'green', 'red'], alpha=0.7)
+        self.ax2.set_ylabel('Recall')
+        self.ax2.set_title('Recall by Filter')
+        self.ax2.set_ylim(0, 1)
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+        # Update text area with detailed information
+        text = f"""Canny Filter (low={canny_data['low']}, high={canny_data['high']}):
+Precision: {canny_data['precision']:.4f}
+Recall: {canny_data['recall']:.4f}
+
+Sobel Filter (ksize={sobel_data['ksize']}):
+Precision: {sobel_data['precision']:.4f}
+Recall: {sobel_data['recall']:.4f}
+
+Shearlet Filter (min_contrast={shearlet_data['min_contrast']}):
+Precision: {shearlet_data['precision']:.4f}
+Recall: {shearlet_data['recall']:.4f}
+"""
+        self.text_area.setText(text)
+        
 class BatchProcessDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -835,6 +897,7 @@ class MyWindow(QMainWindow):
     def open_batch_process_dialog(self):
         dialog = BatchProcessDialog(self)
         dialog.exec_()
+
     def show_statistics_dialog(self):
         if self.img is None:
             QMessageBox.warning(self, "Error", "Please load an image first.")
@@ -873,12 +936,14 @@ class MyWindow(QMainWindow):
         _, shearlet_binary = cv2.threshold(shearlet_edges, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         shearlet_precision, shearlet_recall = self.calculate_precision_recall(manual_mask, shearlet_binary)
         
-        # Show results in a message box
-        msg = f"Canny Filter (low={canny_low}, high={canny_high}):\nPrecision: {canny_precision:.4f}\nRecall: {canny_recall:.4f}\n\n"
-        msg += f"Sobel Filter (ksize={ksize}):\nPrecision: {sobel_precision:.4f}\nRecall: {sobel_recall:.4f}\n\n"
-        msg += f"Shearlet Filter (min_contrast={self.shearletMinContrast.value()}):\nPrecision: {shearlet_precision:.4f}\nRecall: {shearlet_recall:.4f}"
+        # Prepare data for visualization
+        canny_data = {'precision': canny_precision, 'recall': canny_recall, 'low': canny_low, 'high': canny_high}
+        sobel_data = {'precision': sobel_precision, 'recall': sobel_recall, 'ksize': ksize}
+        shearlet_data = {'precision': shearlet_precision, 'recall': shearlet_recall, 'min_contrast': self.shearletMinContrast.value()}
         
-        QMessageBox.information(self, "Edge Detection Metrics", msg)
+        # Show results in the new dialog
+        dialog = PrecisionRecallDialog(self, canny_data, sobel_data, shearlet_data)
+        dialog.exec_()
 
         # Debug: Save intermediate results
         cv2.imwrite('debug_canny.png', canny_edges)
