@@ -8,4 +8,4 @@ shapely==1.8.1
 geopandas==0.10.2
 rasterio==1.2.10
 GDAL==3.4.1
-coshrem==0.2.0
+pycoshrem==0.2.0
