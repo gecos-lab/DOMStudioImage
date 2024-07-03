@@ -757,11 +757,13 @@ class MyWindow(QMainWindow):
         saveAction.triggered.connect(self.save_project)
         fileMenu.addAction(saveAction)
 
+        exportMenu = fileMenu.addMenu('Export')
+        
         exitAction = QAction('Exit', self)
         exitAction.triggered.connect(self.close)
         fileMenu.addAction(exitAction)
 
-        exportMenu = fileMenu.addMenu('Export')
+
         exportShapefileAction = QAction('Export to Shapefile', self)
         exportShapefileAction.triggered.connect(self.export_to_shapefile)
         exportMenu.addAction(exportShapefileAction)
