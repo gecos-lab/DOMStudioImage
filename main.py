@@ -24,8 +24,7 @@ from shapely.geometry import Polygon
 from osgeo import gdal, osr
 import rasterio
 from skimage import measure
-from PyQt5.QtWebEngineWidgets import QWebEngineView
-from PyQt5.QtCore import QUrl
+
 import json
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
