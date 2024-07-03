@@ -328,7 +328,7 @@ class FullViewWindow(QDialog):
             edges = np.where(large_edges, grad_magnitude, 0)
         elif self.filter_type == 'shearlet':
             shearlet_system = EdgeSystem(*self.image.shape)
-            edges, _ = shearlet_system.detect(blurred_image, min_contrast=40)
+            edges, _ = shearlet_system.detect(blurred_image, min_contrast=10)
             edges = mask(edges, thin_mask(edges))
 
         costs = np.where(edges, 1 / (edges + 1e-6), 1)
@@ -686,11 +686,11 @@ class MyWindow(QMainWindow):
         shearletLayout = QVBoxLayout()
         self.shearletMinContrast = QSlider(Qt.Horizontal)
         self.shearletMinContrast.setRange(0, 100)
-        self.shearletMinContrast.setValue(40)
+        self.shearletMinContrast.setValue(10)
         self.shearletMinContrast.valueChanged.connect(self.update_shearlet_label)
         shearletLayout.addWidget(QLabel("Min Contrast"))
         shearletLayout.addWidget(self.shearletMinContrast)
-        self.shearletMinContrast_label = QLabel("40")
+        self.shearletMinContrast_label = QLabel("10")
         shearletLayout.addWidget(self.shearletMinContrast_label)
         shearletControlsGroup.setLayout(shearletLayout)
         rightPanel.addWidget(shearletControlsGroup)
@@ -1084,12 +1084,6 @@ class MyWindow(QMainWindow):
             if ok and binary_method:
                 binary_image = self.convert_to_binary(filtered_image, method=binary_method.lower())
                 print(f"Binary conversion completed using {binary_method} method")
-                
-                # Save binary image for inspection
-                binary_save_path, _ = QFileDialog.getSaveFileName(self, "Save Binary Image", "", "PNG Files (*.png)")
-                if binary_save_path:
-                    cv2.imwrite(binary_save_path, binary_image)
-                    print(f"Binary image saved to: {binary_save_path}")
             else:
                 print("Binary conversion cancelled")
                 return
@@ -1308,7 +1302,7 @@ class MyWindow(QMainWindow):
             if img_path.lower().endswith(('.tif', '.tiff')):
                 # Load GeoTIFF
                 with rasterio.open(img_path) as src:
-                    self.img = src.read(1)
+                    self.img = src.read(1)  # Read the first band
                     self.geotiff_transform = src.transform
                     self.geotiff_crs = src.crs
                     self.geotiff_projection = src.crs.to_wkt()
@@ -1316,6 +1310,8 @@ class MyWindow(QMainWindow):
                 self.img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
 
             if self.img is not None:
+                # Convert to PNG format for internal processing
+                self.img = cv2.normalize(self.img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
                 self.img = cv2.resize(self.img, (256, 256))
                 self.mask = np.zeros(self.img.shape[:2], np.uint8)
                 self.filtered_img = self.img.copy()
