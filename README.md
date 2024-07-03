@@ -1,4 +1,4 @@
-# Lineament Detection in Geological Images
+# PZEROSTUDIOIMAGE: Lineament Detection application tool in Geological Images
 
 This project provides a tool for detecting lineaments in geological images using various edge detection techniques. It offers a user-friendly interface for loading, processing, and analyzing geological images to identify and extract lineament features.
 
