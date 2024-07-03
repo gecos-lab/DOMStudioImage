@@ -55,6 +55,7 @@ For detailed usage instructions, please refer to the user manual.
 - geopandas
 - rasterio
 - GDAL
+- pycoshrem
 
 ## Developers
 
