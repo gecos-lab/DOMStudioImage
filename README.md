@@ -32,6 +32,8 @@ This project provides a tool for detecting lineaments in geological images using
    ```
    python main.py
    ```
+4. Don't install the pycoshrem from pip as it is already been put in the main folder for easy access. In case, it doesn't work. Install it using pip install pycoshrem
+
 
 ## Usage
 
@@ -55,7 +57,6 @@ For detailed usage instructions, please refer to the user manual.
 - geopandas
 - rasterio
 - GDAL
-- pycoshrem
 
 ## Developers
 
