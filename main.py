@@ -1376,7 +1376,7 @@ class MyWindow(QMainWindow):
             if self.img is not None:
                 # Convert to PNG format for internal processing
                 self.img = cv2.normalize(self.img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                self.img = cv2.resize(self.img, (256, 256))
+                self.img = cv2.resize(self.img, (512, 512))
                 self.mask = np.zeros(self.img.shape[:2], np.uint8)
                 self.filtered_img = self.img.copy()
                 self.shearlet_system = EdgeSystem(*self.img.shape)
