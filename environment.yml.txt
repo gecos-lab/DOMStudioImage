@@ -1,0 +1,19 @@
+name: domstudioimage
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - numpy
+  - opencv
+  - pyqt
+  - matplotlib
+  - scikit-image
+  - scipy
+  - shapely
+  - geopandas
+  - rasterio
+  - gdal
+  - pip:
+    - pycoshrem
