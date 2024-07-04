@@ -34,7 +34,6 @@ This project provides a tool for detecting lineaments in geological images using
    ```
 4. Don't install the pycoshrem from pip as it is already been put in the main folder for easy access. In case, it doesn't work. Install it using pip install pycoshrem
 
-
 ## Usage
 
 1. Load an image using the "Load Image" button
@@ -64,7 +63,7 @@ For detailed usage instructions, please refer to the user manual.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the GNU Affero General Public License v3.0 (AGPLv3) - see the LICENSE file for details.
 
 ## Contributing
 
