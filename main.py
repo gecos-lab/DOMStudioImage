@@ -297,16 +297,26 @@ class SaveMaskDialog(QDialog):
 
 
 class FullViewWindow(QDialog):
-    def __init__(self, image, title, original_shape, cmap=None, is_manual_interpretation=False, filter_type='canny'):
+    def __init__(self, image, title, original_shape, cmap=None, is_manual_interpretation=False, filter_type='canny', shearlet_system=None):
         super().__init__()
         self.setWindowTitle(title)
         self.setGeometry(100, 100, 800, 600)
         
-        self.image = image
+        self.original_image = image
+        self.display_image = image.copy()
         self.original_shape = original_shape
         self.cmap = cmap
         self.is_manual_interpretation = is_manual_interpretation
         self.filter_type = filter_type
+        self.shearlet_system = shearlet_system
+
+        self.lines = []
+        self.current_line = []
+        self.editing_line_index = None
+        self.is_drawing = False
+        self.is_semi_auto = False
+        self.is_edit_mode = False
+        self.semi_auto_start_point = None
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -325,52 +335,84 @@ class FullViewWindow(QDialog):
         container.setLayout(container_layout)
 
         self.scroll_area.setWidget(container)
+
+        if is_manual_interpretation:
+            self.setup_manual_interpretation_ui(layout)
+
         self.setLayout(layout)
 
-        self.drawing_enabled = False
+        self.canvas.mpl_connect("button_press_event", self.on_canvas_click)
+        self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
+        self.canvas.mpl_connect("button_release_event", self.on_mouse_release)
+
+        self.show_image()
+    def setup_manual_interpretation_ui(self, layout):
+        self.toggle_drawing_button = QPushButton("Enable Manual Drawing")
+        self.toggle_drawing_button.clicked.connect(self.toggle_drawing)
+        layout.addWidget(self.toggle_drawing_button)
+
+        self.toggle_semi_auto_button = QPushButton("Enable Semi-Auto Drawing")
+        self.toggle_semi_auto_button.clicked.connect(self.toggle_semi_auto)
+        layout.addWidget(self.toggle_semi_auto_button)
+
+        self.apply_filter_button = QPushButton("Apply Filter")
+        self.apply_filter_button.clicked.connect(self.apply_filter)
+        layout.addWidget(self.apply_filter_button)
+
+        self.edit_mode_button = QPushButton("Enter Edit Mode")
+        self.edit_mode_button.clicked.connect(self.toggle_edit_mode)
+        layout.addWidget(self.edit_mode_button)
+
+    def apply_filter(self):
+        edges = self.get_edge_map()
+        self.display_image = cv2.addWeighted(self.original_image, 0.7, edges, 0.3, 0)
+        self.show_image()
+        self.draw_lines()
         
-        if is_manual_interpretation:
-            self.start_point = None
-            self.end_point = None
-            self.canvas.mpl_connect("button_press_event", self.on_canvas_click)
-            self.toggle_drawing_button = QPushButton("Enable Semi Autotracking")
-            self.toggle_drawing_button.clicked.connect(self.toggle_drawing)
-            layout.addWidget(self.toggle_drawing_button)
-
-        self.show_image(image, cmap)
-
-    def show_image(self, image, cmap):
+    def show_image(self):
         self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        ax.imshow(image, cmap=cmap, aspect='auto')
-        ax.axis('off')
+        self.ax = self.figure.add_subplot(111)
+        self.ax.imshow(self.display_image, cmap=self.cmap, aspect='auto')
+        self.ax.axis('off')
         self.figure.tight_layout(pad=0)
         self.canvas.draw()
 
     def on_canvas_click(self, event):
-        if not self.drawing_enabled:
+        if not self.is_manual_interpretation or event.inaxes != self.ax:
             return
 
-        coords = (int(event.ydata), int(event.xdata))
-        print(f"Clicked coordinates: {coords}")
-        if not self.start_point:
-            self.start_point = coords
-            self.canvas.figure.gca().scatter(coords[1], coords[0], color='green', s=100)
-            self.canvas.draw()
-            print(f"Start point set at: {self.start_point}")
-        else:
-            self.end_point = coords
-            self.canvas.figure.gca().scatter(coords[1], coords[0], color='blue', s=100)
-            self.canvas.draw()
-            print(f"End point set at: {self.end_point}")
-            self.start_autotrack()
+        x, y = int(event.xdata), int(event.ydata)
+        
+        if self.is_drawing:
+            if event.button == 1:  # Left click
+                if not self.current_line:
+                    self.current_line = [(x, y)]
+                else:
+                    self.current_line.append((x, y))
+                    self.draw_lines()
+            elif event.button == 3:  # Right click
+                if self.current_line:
+                    self.lines.append(self.current_line)
+                    self.current_line = []
+                    self.draw_lines()
+        elif self.is_semi_auto:
+            if not self.semi_auto_start_point:
+                self.semi_auto_start_point = (x, y)
+                QMessageBox.information(self, "Semi-Auto Drawing", "Start point set. Click again to set end point.")
+            else:
+                end_point = (x, y)
+                tracked_line = self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
+                self.lines.append(tracked_line)
+                self.semi_auto_start_point = None
+                self.draw_lines()
+                QMessageBox.information(self, "Semi-Auto Drawing", "Line drawn. You can start a new line.")
 
     def toggle_drawing(self):
-        self.drawing_enabled = not self.drawing_enabled
-        if self.drawing_enabled:
-            self.toggle_drawing_button.setText("Disable Semi Autotracking")
-        else:
-            self.toggle_drawing_button.setText("Enable Semi Autotracking")
+        self.is_drawing = not self.is_drawing
+        self.is_semi_auto = False
+        self.semi_auto_start_point = None
+        self.toggle_drawing_button.setText("Disable Manual Drawing" if self.is_drawing else "Enable Manual Drawing")
+        self.toggle_semi_auto_button.setText("Enable Semi-Auto Drawing")
 
     def start_autotrack(self):
         if not self.start_point or not self.end_point:
@@ -425,6 +467,178 @@ class FullViewWindow(QDialog):
         self.start_point = None
         self.end_point = None
 
+    def on_mouse_move(self, event):
+        if not self.is_manual_interpretation or not self.is_drawing or not self.current_line or event.inaxes != self.ax:
+            return
+
+        x, y = int(event.xdata), int(event.ydata)
+        temp_line = self.current_line + [(x, y)]
+        self.draw_lines(temp_line)
+
+    def on_mouse_release(self, event):
+        if self.is_manual_interpretation and self.is_drawing and event.button == 1 and self.current_line:  # Left click release
+            x, y = int(event.xdata), int(event.ydata)
+            self.current_line.append((x, y))
+            self.draw_lines()
+
+    def draw_lines(self, temp_line=None):
+        self.show_image()
+        for line in self.lines:
+            x, y = zip(*line)
+            self.ax.plot(x, y, 'r-')
+        if self.current_line:
+            x, y = zip(*self.current_line)
+            self.ax.plot(x, y, 'r-')
+        if temp_line:
+            x, y = zip(*temp_line)
+            self.ax.plot(x, y, 'r--')
+        self.canvas.draw()
+    def semi_automatic_tracking(self, start_point, end_point):
+        # Convert points to image coordinates
+        start = (int(start_point[1]), int(start_point[0]))
+        end = (int(end_point[1]), int(end_point[0]))
+
+        # Get the edge map
+        edge_map = self.get_edge_map()
+
+        # Create a cost map from the edge map
+        cost_map = 1 - edge_map / 255.0  # Invert so edges have low cost
+
+        # Use A* algorithm to find the path
+        path = self.a_star(cost_map, start, end)
+
+        # Convert path back to display coordinates
+        tracked_line = [(y, x) for x, y in path]
+
+        return tracked_line
+
+    def get_edge_map(self):
+        if self.filter_type == 'canny':
+            return cv2.Canny(self.original_image, 50, 150)
+        elif self.filter_type == 'sobel':
+            grad_x = cv2.Sobel(self.original_image, cv2.CV_64F, 1, 0, ksize=3)
+            grad_y = cv2.Sobel(self.original_image, cv2.CV_64F, 0, 1, ksize=3)
+            edges = np.sqrt(grad_x**2 + grad_y**2)
+            return cv2.normalize(edges, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        elif self.filter_type == 'shearlet':
+            if self.shearlet_system is not None:
+                edges, _ = self.shearlet_system.detect(self.original_image, min_contrast=10)
+                edges = mask(edges, thin_mask(edges))
+                return (edges * 255).astype(np.uint8)
+            else:
+                return np.zeros_like(self.original_image)
+        else:
+            return np.zeros_like(self.original_image)
+
+    def a_star(self, cost_map, start, goal):
+        def heuristic(a, b):
+            return np.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2)
+
+        neighbors = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
+
+        close_set = set()
+        came_from = {}
+        gscore = {start:0}
+        fscore = {start:heuristic(start, goal)}
+        oheap = []
+
+        heapq.heappush(oheap, (fscore[start], start))
+        
+        while oheap:
+            current = heapq.heappop(oheap)[1]
+
+            if current == goal:
+                path = []
+                while current in came_from:
+                    path.append(current)
+                    current = came_from[current]
+                path.append(start)
+                path.reverse()
+                return path
+
+            close_set.add(current)
+
+            for i, j in neighbors:
+                neighbor = current[0] + i, current[1] + j
+                tentative_g_score = gscore[current] + cost_map[neighbor[0]][neighbor[1]]
+
+                if 0 <= neighbor[0] < cost_map.shape[0] and 0 <= neighbor[1] < cost_map.shape[1]:
+                    if neighbor in close_set and tentative_g_score >= gscore.get(neighbor, 0):
+                        continue
+
+                    if tentative_g_score < gscore.get(neighbor, 0) or neighbor not in [i[1]for i in oheap]:
+                        came_from[neighbor] = current
+                        gscore[neighbor] = tentative_g_score
+                        fscore[neighbor] = gscore[neighbor] + heuristic(neighbor, goal)
+                        heapq.heappush(oheap, (fscore[neighbor], neighbor))
+        
+        return []
+
+    def keyPressEvent(self, event):
+        if self.is_manual_interpretation and event.key() == Qt.Key_E:  # 'E' for edit mode
+            self.toggle_edit_mode()
+        else:
+            super().keyPressEvent(event)
+
+    def toggle_edit_mode(self):
+        if not self.is_manual_interpretation:
+            return
+
+        self.is_edit_mode = not self.is_edit_mode
+        if self.is_edit_mode:
+            self.is_drawing = False
+            self.is_semi_auto = False
+            self.toggle_drawing_button.setEnabled(False)
+            self.toggle_semi_auto_button.setEnabled(False)
+            self.edit_mode_button.setText("Exit Edit Mode")
+            QMessageBox.information(self, "Edit Mode", "Click on a line point to edit. Click 'Exit Edit Mode' when done.")
+            self.canvas.mpl_connect("button_press_event", self.on_edit_click)
+        else:
+            self.toggle_drawing_button.setEnabled(True)
+            self.toggle_semi_auto_button.setEnabled(True)
+            self.edit_mode_button.setText("Enter Edit Mode")
+            self.canvas.mpl_disconnect(self.canvas.mpl_connect("button_press_event", self.on_edit_click))
+
+    def on_edit_click(self, event):
+        if event.inaxes != self.ax:
+            return
+
+        x, y = event.xdata, event.ydata
+        min_distance = float('inf')
+        selected_line = None
+        selected_point_index = None
+
+        for i, line in enumerate(self.lines):
+            for j, point in enumerate(line):
+                distance = np.sqrt((x - point[0])**2 + (y - point[1])**2)
+                if distance < min_distance:
+                    min_distance = distance
+                    selected_line = i
+                    selected_point_index = j
+
+        if selected_line is not None and min_distance < 10:  # Threshold for selection
+            self.edit_line(selected_line, selected_point_index, (x, y))
+
+    def edit_line(self, line_index, point_index, new_position):
+        self.lines[line_index][point_index] = new_position
+        self.draw_lines()
+
+
+    def toggle_semi_auto(self):
+        self.is_semi_auto = not self.is_semi_auto
+        self.is_drawing = False
+        if self.is_semi_auto:
+            self.toggle_semi_auto_button.setText("Disable Semi-Auto")
+            self.toggle_drawing_button.setText("Enable Drawing")
+        else:
+            self.toggle_semi_auto_button.setText("Enable Semi-Auto")
+
+    def toggle_semi_auto(self):
+        self.is_semi_auto = not self.is_semi_auto
+        self.is_drawing = False
+        self.semi_auto_start_point = None
+        self.toggle_semi_auto_button.setText("Disable Semi-Auto Drawing" if self.is_semi_auto else "Enable Semi-Auto Drawing")
+        self.toggle_drawing_button.setText("Enable Manual Drawing")
 class ExportDialog(QDialog):
     def __init__(self, parent=None, export_type=""):
         super().__init__(parent)
