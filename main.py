@@ -297,7 +297,8 @@ class SaveMaskDialog(QDialog):
 
 
 class FullViewWindow(QDialog):
-    def __init__(self, image, title, original_shape, cmap=None, is_manual_interpretation=False, filter_type='canny', shearlet_system=None):
+    def __init__(self, image, title, original_shape, cmap=None, is_manual_interpretation=False, filter_type='canny', shearlet_system=None,
+                 canny_low=50, canny_high=150, sobel_ksize=3, shearlet_min_contrast=10):
         super().__init__()
         self.setWindowTitle(title)
         self.setGeometry(100, 100, 800, 600)
@@ -310,7 +311,13 @@ class FullViewWindow(QDialog):
         self.filter_type = filter_type
         self.shearlet_system = shearlet_system
 
+        self.canny_low = canny_low
+        self.canny_high = canny_high
+        self.sobel_ksize = sobel_ksize
+        self.shearlet_min_contrast = shearlet_min_contrast
+
         self.lines = []
+        self.filtered_lines = []
         self.current_line = []
         self.editing_line_index = None
         self.is_drawing = False
@@ -346,6 +353,8 @@ class FullViewWindow(QDialog):
         self.canvas.mpl_connect("button_release_event", self.on_mouse_release)
 
         self.show_image()
+        if is_manual_interpretation:
+            self.apply_filter()
     def setup_manual_interpretation_ui(self, layout):
         self.toggle_drawing_button = QPushButton("Enable Manual Drawing")
         self.toggle_drawing_button.clicked.connect(self.toggle_drawing)
@@ -366,6 +375,7 @@ class FullViewWindow(QDialog):
     def apply_filter(self):
         edges = self.get_edge_map()
         self.display_image = cv2.addWeighted(self.original_image, 0.7, edges, 0.3, 0)
+        self.filtered_lines = self.convert_edges_to_lines(edges)
         self.show_image()
         self.draw_lines()
         
@@ -377,6 +387,15 @@ class FullViewWindow(QDialog):
         self.figure.tight_layout(pad=0)
         self.canvas.draw()
 
+    def convert_edges_to_lines(self, edges):
+        contours = measure.find_contours(edges, 0.5)
+        lines = []
+        for contour in contours:
+            simplified = measure.approximate_polygon(contour, tolerance=2)
+            if len(simplified) > 1:
+                lines.append([(int(x), int(y)) for y, x in simplified])
+        return lines
+    
     def on_canvas_click(self, event):
         if not self.is_manual_interpretation or event.inaxes != self.ax:
             return
@@ -406,13 +425,25 @@ class FullViewWindow(QDialog):
                 self.semi_auto_start_point = None
                 self.draw_lines()
                 QMessageBox.information(self, "Semi-Auto Drawing", "Line drawn. You can start a new line.")
+        elif self.is_edit_mode:
+            self.edit_nearest_point(x, y)
+
+    def on_mouse_move(self, event):
+        if not self.is_manual_interpretation or not self.is_drawing or not self.current_line or event.inaxes != self.ax:
+            return
+
+        x, y = int(event.xdata), int(event.ydata)
+        temp_line = self.current_line + [(x, y)]
+        self.draw_lines(temp_line)
 
     def toggle_drawing(self):
         self.is_drawing = not self.is_drawing
         self.is_semi_auto = False
+        self.is_edit_mode = False
         self.semi_auto_start_point = None
         self.toggle_drawing_button.setText("Disable Manual Drawing" if self.is_drawing else "Enable Manual Drawing")
         self.toggle_semi_auto_button.setText("Enable Semi-Auto Drawing")
+        self.edit_mode_button.setText("Enter Edit Mode")
 
     def start_autotrack(self):
         if not self.start_point or not self.end_point:
@@ -467,14 +498,6 @@ class FullViewWindow(QDialog):
         self.start_point = None
         self.end_point = None
 
-    def on_mouse_move(self, event):
-        if not self.is_manual_interpretation or not self.is_drawing or not self.current_line or event.inaxes != self.ax:
-            return
-
-        x, y = int(event.xdata), int(event.ydata)
-        temp_line = self.current_line + [(x, y)]
-        self.draw_lines(temp_line)
-
     def on_mouse_release(self, event):
         if self.is_manual_interpretation and self.is_drawing and event.button == 1 and self.current_line:  # Left click release
             x, y = int(event.xdata), int(event.ydata)
@@ -483,7 +506,7 @@ class FullViewWindow(QDialog):
 
     def draw_lines(self, temp_line=None):
         self.show_image()
-        for line in self.lines:
+        for line in self.lines + self.filtered_lines:
             x, y = zip(*line)
             self.ax.plot(x, y, 'r-')
         if self.current_line:
@@ -493,6 +516,7 @@ class FullViewWindow(QDialog):
             x, y = zip(*temp_line)
             self.ax.plot(x, y, 'r--')
         self.canvas.draw()
+
     def semi_automatic_tracking(self, start_point, end_point):
         # Convert points to image coordinates
         start = (int(start_point[1]), int(start_point[0]))
@@ -514,15 +538,15 @@ class FullViewWindow(QDialog):
 
     def get_edge_map(self):
         if self.filter_type == 'canny':
-            return cv2.Canny(self.original_image, 50, 150)
+            return cv2.Canny(self.original_image, self.canny_low, self.canny_high)
         elif self.filter_type == 'sobel':
-            grad_x = cv2.Sobel(self.original_image, cv2.CV_64F, 1, 0, ksize=3)
-            grad_y = cv2.Sobel(self.original_image, cv2.CV_64F, 0, 1, ksize=3)
+            grad_x = cv2.Sobel(self.original_image, cv2.CV_64F, 1, 0, ksize=self.sobel_ksize)
+            grad_y = cv2.Sobel(self.original_image, cv2.CV_64F, 0, 1, ksize=self.sobel_ksize)
             edges = np.sqrt(grad_x**2 + grad_y**2)
             return cv2.normalize(edges, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
         elif self.filter_type == 'shearlet':
             if self.shearlet_system is not None:
-                edges, _ = self.shearlet_system.detect(self.original_image, min_contrast=10)
+                edges, _ = self.shearlet_system.detect(self.original_image, min_contrast=self.shearlet_min_contrast)
                 edges = mask(edges, thin_mask(edges))
                 return (edges * 255).astype(np.uint8)
             else:
@@ -579,25 +603,65 @@ class FullViewWindow(QDialog):
             self.toggle_edit_mode()
         else:
             super().keyPressEvent(event)
-
+            
     def toggle_edit_mode(self):
         if not self.is_manual_interpretation:
             return
 
         self.is_edit_mode = not self.is_edit_mode
+        self.is_drawing = False
+        self.is_semi_auto = False
         if self.is_edit_mode:
-            self.is_drawing = False
-            self.is_semi_auto = False
             self.toggle_drawing_button.setEnabled(False)
             self.toggle_semi_auto_button.setEnabled(False)
             self.edit_mode_button.setText("Exit Edit Mode")
-            QMessageBox.information(self, "Edit Mode", "Click on a line point to edit. Click 'Exit Edit Mode' when done.")
-            self.canvas.mpl_connect("button_press_event", self.on_edit_click)
+            QMessageBox.information(self, "Edit Mode", "Click near a line point to edit. Click 'Exit Edit Mode' when done.")
         else:
             self.toggle_drawing_button.setEnabled(True)
             self.toggle_semi_auto_button.setEnabled(True)
             self.edit_mode_button.setText("Enter Edit Mode")
-            self.canvas.mpl_disconnect(self.canvas.mpl_connect("button_press_event", self.on_edit_click))
+
+    def toggle_semi_auto(self):
+        self.is_semi_auto = not self.is_semi_auto
+        self.is_drawing = False
+        self.is_edit_mode = False
+        self.semi_auto_start_point = None
+        self.toggle_semi_auto_button.setText("Disable Semi-Auto Drawing" if self.is_semi_auto else "Enable Semi-Auto Drawing")
+        self.toggle_drawing_button.setText("Enable Manual Drawing")
+        self.edit_mode_button.setText("Enter Edit Mode")
+
+    def edit_nearest_point(self, x, y):
+        min_distance = float('inf')
+        nearest_line = None
+        nearest_point_index = None
+        is_filtered_line = False
+
+        # Check manually drawn lines
+        for i, line in enumerate(self.lines):
+            for j, point in enumerate(line):
+                distance = np.sqrt((x - point[0])**2 + (y - point[1])**2)
+                if distance < min_distance:
+                    min_distance = distance
+                    nearest_line = i
+                    nearest_point_index = j
+                    is_filtered_line = False
+
+        # Check filtered lines
+        for i, line in enumerate(self.filtered_lines):
+            for j, point in enumerate(line):
+                distance = np.sqrt((x - point[0])**2 + (y - point[1])**2)
+                if distance < min_distance:
+                    min_distance = distance
+                    nearest_line = i
+                    nearest_point_index = j
+                    is_filtered_line = True
+
+        if nearest_line is not None and min_distance < 10:  # Threshold for selection
+            if is_filtered_line:
+                self.filtered_lines[nearest_line][nearest_point_index] = (x, y)
+            else:
+                self.lines[nearest_line][nearest_point_index] = (x, y)
+            self.draw_lines()
 
     def on_edit_click(self, event):
         if event.inaxes != self.ax:
@@ -622,23 +686,18 @@ class FullViewWindow(QDialog):
     def edit_line(self, line_index, point_index, new_position):
         self.lines[line_index][point_index] = new_position
         self.draw_lines()
+    def update_thresholds(self, canny_low=None, canny_high=None, sobel_ksize=None, shearlet_min_contrast=None):
+        if canny_low is not None:
+            self.canny_low = canny_low
+        if canny_high is not None:
+            self.canny_high = canny_high
+        if sobel_ksize is not None:
+            self.sobel_ksize = sobel_ksize
+        if shearlet_min_contrast is not None:
+            self.shearlet_min_contrast = shearlet_min_contrast
+        
+        self.apply_filter() 
 
-
-    def toggle_semi_auto(self):
-        self.is_semi_auto = not self.is_semi_auto
-        self.is_drawing = False
-        if self.is_semi_auto:
-            self.toggle_semi_auto_button.setText("Disable Semi-Auto")
-            self.toggle_drawing_button.setText("Enable Drawing")
-        else:
-            self.toggle_semi_auto_button.setText("Enable Semi-Auto")
-
-    def toggle_semi_auto(self):
-        self.is_semi_auto = not self.is_semi_auto
-        self.is_drawing = False
-        self.semi_auto_start_point = None
-        self.toggle_semi_auto_button.setText("Disable Semi-Auto Drawing" if self.is_semi_auto else "Enable Semi-Auto Drawing")
-        self.toggle_drawing_button.setText("Enable Manual Drawing")
 class ExportDialog(QDialog):
     def __init__(self, parent=None, export_type=""):
         super().__init__(parent)
@@ -833,6 +892,7 @@ class MyWindow(QMainWindow):
         self.mask = None
         self.filtered_img = None
         self.shearlet_system = None
+        self.full_view_window = None
         self.setGeometry(100, 100, 1200, 800)  # Increase initial window size
         self.initUI()
 
@@ -1590,7 +1650,7 @@ class MyWindow(QMainWindow):
             if self.img is not None:
                 # Convert to PNG format for internal processing
                 self.img = cv2.normalize(self.img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                self.img = cv2.resize(self.img, (512, 512))
+                self.img = cv2.resize(self.img, (256, 256))
                 self.mask = np.zeros(self.img.shape[:2], np.uint8)
                 self.filtered_img = self.img.copy()
                 self.shearlet_system = EdgeSystem(*self.img.shape)
@@ -1669,17 +1729,25 @@ class MyWindow(QMainWindow):
             self.open_full_view(self.img, "Manual Interpretation", is_manual_interpretation=True, filter_type=self.filter_type_combo.currentText())
 
     def open_full_view(self, image, title, cmap='gray', is_manual_interpretation=False, filter_type='canny'):
-        self.full_view_window = FullViewWindow(image, title, self.img.shape, cmap, is_manual_interpretation, filter_type)
+        self.full_view_window = FullViewWindow(
+            image, title, self.img.shape, cmap, is_manual_interpretation, filter_type, self.shearlet_system,
+            canny_low=self.cannyThreshold1.value(),
+            canny_high=self.cannyThreshold2.value(),
+            sobel_ksize=self.sobelKsize.value(),
+            shearlet_min_contrast=self.shearletMinContrast.value()
+        )
         self.full_view_window.exec_()
 
     def update_canny_label(self):
         self.cannyThreshold1_label.setText(str(self.cannyThreshold1.value()))
         self.cannyThreshold2_label.setText(str(self.cannyThreshold2.value()))
         self.apply_canny_filter()
+        self.update_full_view_window()
 
     def update_sobel_label(self):
         self.sobelKsize_label.setText(str(self.sobelKsize.value()))
         self.apply_sobel_filter()
+        self.update_full_view_window()
 
     def apply_shearlet_filter(self):
         if self.img is None or self.shearlet_system is None:
@@ -1704,6 +1772,17 @@ class MyWindow(QMainWindow):
     def update_shearlet_label(self):
         self.shearletMinContrast_label.setText(str(self.shearletMinContrast.value()))
         self.apply_shearlet_filter()
+        self.update_full_view_window()
+
+    def update_full_view_window(self):
+        if self.full_view_window and self.full_view_window.is_manual_interpretation:
+            self.full_view_window.update_thresholds(
+                canny_low=self.cannyThreshold1.value(),
+                canny_high=self.cannyThreshold2.value(),
+                sobel_ksize=self.sobelKsize.value(),
+                shearlet_min_contrast=self.shearletMinContrast.value()
+            )
+
 
 
 if __name__ == '__main__':
