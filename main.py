@@ -306,6 +306,7 @@ class FullViewWindow(QDialog):
         
         self.original_image = image
         self.display_image = image.copy()
+        self.filtered_image = None
         self.original_shape = original_shape
         self.cmap = cmap
         self.is_manual_interpretation = is_manual_interpretation
@@ -320,31 +321,27 @@ class FullViewWindow(QDialog):
         self.lines = []
         self.filtered_lines = []
         self.current_line = []
-        self.editing_line_index = None
         self.is_drawing = False
         self.is_semi_auto = False
         self.is_edit_mode = False
         self.semi_auto_start_point = None
+        self.max_path_length = 1000
 
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
+        self.setup_ui()
+        self.show_original_image()
+        self.update_edge_map()  # Generate initial edge map for semi-auto drawing
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
 
         self.figure = Figure(figsize=(8, 6))
         self.canvas = FigureCanvas(self.figure)
         self.toolbar = NavigationToolbar(self.canvas, self)
 
-        layout = QVBoxLayout()
         layout.addWidget(self.toolbar)
-        layout.addWidget(self.scroll_area)
+        layout.addWidget(self.canvas)
 
-        container = QWidget()
-        container_layout = QVBoxLayout()
-        container_layout.addWidget(self.canvas)
-        container.setLayout(container_layout)
-
-        self.scroll_area.setWidget(container)
-
-        if is_manual_interpretation:
+        if self.is_manual_interpretation:
             self.setup_manual_interpretation_ui(layout)
 
         self.setLayout(layout)
@@ -353,9 +350,6 @@ class FullViewWindow(QDialog):
         self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
         self.canvas.mpl_connect("button_release_event", self.on_mouse_release)
 
-        self.show_image()
-        if is_manual_interpretation:
-            self.apply_filter()
     def setup_manual_interpretation_ui(self, layout):
         self.toggle_drawing_button = QPushButton("Enable Manual Drawing")
         self.toggle_drawing_button.clicked.connect(self.toggle_drawing)
@@ -365,21 +359,40 @@ class FullViewWindow(QDialog):
         self.toggle_semi_auto_button.clicked.connect(self.toggle_semi_auto)
         layout.addWidget(self.toggle_semi_auto_button)
 
-        self.apply_filter_button = QPushButton("Apply Filter")
+        self.apply_filter_button = QPushButton("Apply Filter (Compare)")
         self.apply_filter_button.clicked.connect(self.apply_filter)
         layout.addWidget(self.apply_filter_button)
 
         self.edit_mode_button = QPushButton("Enter Edit Mode")
         self.edit_mode_button.clicked.connect(self.toggle_edit_mode)
         layout.addWidget(self.edit_mode_button)
-
-    def apply_filter(self):
-        edges = self.get_edge_map()
-        self.display_image = cv2.addWeighted(self.original_image, 0.7, edges, 0.3, 0)
-        self.filtered_lines = self.convert_edges_to_lines(edges)
-        self.show_image()
-        self.draw_lines()
         
+    def show_original_image(self):
+        self.figure.clear()
+        self.ax = self.figure.add_subplot(111)
+        self.ax.imshow(self.display_image, cmap=self.cmap, aspect='auto')
+        self.ax.axis('off')
+        self.figure.tight_layout(pad=0)
+        self.canvas.draw()
+
+    def update_edge_map(self):
+        self.edge_map = self.get_edge_map()
+    
+    def apply_filter(self):
+        if self.filtered_image is None:
+            self.filtered_image = cv2.addWeighted(self.original_image, 0.7, self.edge_map, 0.3, 0)
+        self.filtered_lines = self.convert_edges_to_lines(self.edge_map)
+        self.show_filtered_image()
+        self.draw_lines(include_filtered=True)
+    
+    def show_filtered_image(self):
+        self.figure.clear()
+        self.ax = self.figure.add_subplot(111)
+        self.ax.imshow(self.filtered_image, cmap=self.cmap, aspect='auto')
+        self.ax.axis('off')
+        self.figure.tight_layout(pad=0)
+        self.canvas.draw()
+
     def show_image(self):
         self.figure.clear()
         self.ax = self.figure.add_subplot(111)
@@ -505,15 +518,21 @@ class FullViewWindow(QDialog):
             self.current_line.append((x, y))
             self.draw_lines()
 
-    def draw_lines(self, temp_line=None):
-        self.show_image()
-        for line in self.lines + self.filtered_lines:
-            x, y = zip(*line)
-            self.ax.plot(x, y, 'r-')
-        if self.current_line:
+    def draw_lines(self, temp_line=None, include_filtered=False):
+        self.show_original_image()  # Always draw on the original image
+        for line in self.lines:
+            if line and len(line) > 1:
+                x, y = zip(*line)
+                self.ax.plot(x, y, 'r-')
+        if include_filtered:
+            for line in self.filtered_lines:
+                if line and len(line) > 1:
+                    x, y = zip(*line)
+                    self.ax.plot(x, y, 'b-')  # Draw filtered lines in blue
+        if self.current_line and len(self.current_line) > 1:
             x, y = zip(*self.current_line)
             self.ax.plot(x, y, 'r-')
-        if temp_line:
+        if temp_line and len(temp_line) > 1:
             x, y = zip(*temp_line)
             self.ax.plot(x, y, 'r--')
         self.canvas.draw()
@@ -523,19 +542,19 @@ class FullViewWindow(QDialog):
         start = (int(start_point[1]), int(start_point[0]))
         end = (int(end_point[1]), int(end_point[0]))
 
-        # Get the edge map
-        edge_map = self.get_edge_map()
-
         # Create a cost map from the edge map
-        cost_map = 1 - edge_map / 255.0  # Invert so edges have low cost
+        cost_map = 1 - self.edge_map / 255.0  # Invert so edges have low cost
 
         # Use A* algorithm to find the path
         path = self.a_star(cost_map, start, end)
 
-        # Convert path back to display coordinates
-        tracked_line = [(y, x) for x, y in path]
-
-        return tracked_line
+        if path:
+            # Convert path back to display coordinates
+            tracked_line = [(x, y) for y, x in path]
+            return tracked_line
+        else:
+            QMessageBox.warning(self, "Path Not Found", "Could not find a path between the selected points. Try selecting closer points or adjusting the filter settings.")
+            return None
 
     def get_edge_map(self):
         if self.filter_type == 'canny':
@@ -554,17 +573,17 @@ class FullViewWindow(QDialog):
                 return np.zeros_like(self.original_image)
         else:
             return np.zeros_like(self.original_image)
-
+        
     def a_star(self, cost_map, start, goal):
         def heuristic(a, b):
-            return np.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2)
+            return np.hypot(b[0] - a[0], b[1] - a[1])
 
         neighbors = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
 
         close_set = set()
         came_from = {}
-        gscore = {start:0}
-        fscore = {start:heuristic(start, goal)}
+        gscore = {start: 0}
+        fscore = {start: heuristic(start, goal)}
         oheap = []
 
         heapq.heappush(oheap, (fscore[start], start))
@@ -583,21 +602,22 @@ class FullViewWindow(QDialog):
 
             close_set.add(current)
 
+            if len(close_set) > self.max_path_length:
+                return None  # Path is too long, abort search
+
             for i, j in neighbors:
                 neighbor = current[0] + i, current[1] + j
-                tentative_g_score = gscore[current] + cost_map[neighbor[0]][neighbor[1]]
-
                 if 0 <= neighbor[0] < cost_map.shape[0] and 0 <= neighbor[1] < cost_map.shape[1]:
-                    if neighbor in close_set and tentative_g_score >= gscore.get(neighbor, 0):
+                    if neighbor in close_set:
                         continue
-
-                    if tentative_g_score < gscore.get(neighbor, 0) or neighbor not in [i[1]for i in oheap]:
+                    tentative_g_score = gscore[current] + cost_map[neighbor[0]][neighbor[1]]
+                    if tentative_g_score < gscore.get(neighbor, np.inf):
                         came_from[neighbor] = current
                         gscore[neighbor] = tentative_g_score
                         fscore[neighbor] = gscore[neighbor] + heuristic(neighbor, goal)
                         heapq.heappush(oheap, (fscore[neighbor], neighbor))
         
-        return []
+        return None
 
     def keyPressEvent(self, event):
         if self.is_manual_interpretation and event.key() == Qt.Key_E:  # 'E' for edit mode
@@ -687,6 +707,7 @@ class FullViewWindow(QDialog):
     def edit_line(self, line_index, point_index, new_position):
         self.lines[line_index][point_index] = new_position
         self.draw_lines()
+
     def update_thresholds(self, canny_low=None, canny_high=None, sobel_ksize=None, shearlet_min_contrast=None):
         if canny_low is not None:
             self.canny_low = canny_low
@@ -696,8 +717,28 @@ class FullViewWindow(QDialog):
             self.sobel_ksize = sobel_ksize
         if shearlet_min_contrast is not None:
             self.shearlet_min_contrast = shearlet_min_contrast
-        
-        self.apply_filter() 
+        self.update_edge_map()  # Update edge map when thresholds change
+
+    def handle_semi_auto(self, x, y):
+        if not self.semi_auto_start_point:
+            self.semi_auto_start_point = (x, y)
+            QMessageBox.information(self, "Semi-Auto Drawing", "Start point set. Click again to set end point.")
+        else:
+            end_point = (x, y)
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                tracked_line = self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
+                if tracked_line and len(tracked_line) > 1:
+                    self.lines.append(tracked_line)
+                    self.draw_lines()
+                    QMessageBox.information(self, "Semi-Auto Drawing", "Line drawn. You can start a new line.")
+                else:
+                    QMessageBox.warning(self, "Semi-Auto Drawing", "Unable to find a path. Try different points or adjust the filter.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"An error occurred during semi-automatic tracking: {str(e)}")
+            finally:
+                QApplication.restoreOverrideCursor()
+            self.semi_auto_start_point = None
 
 class ExportDialog(QDialog):
     def __init__(self, parent=None, export_type=""):
