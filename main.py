@@ -623,7 +623,7 @@ class MyWindow(QMainWindow):
         self.initUI()
 
     def initUI(self):
-        self.setWindowTitle('PZeroStudioImage')
+        self.setWindowTitle('DOMStudioImage')
         self.setGeometry(100, 100, 1200, 800)
 
         mainWidget = QWidget(self)
