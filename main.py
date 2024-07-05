@@ -1681,13 +1681,27 @@ class MyWindow(QMainWindow):
         if img_path:
             if img_path.lower().endswith(('.tif', '.tiff')):
                 # Load GeoTIFF
-                with rasterio.open(img_path) as src:
-                    self.img = src.read(1)  # Read the first band
-                    self.geotiff_transform = src.transform
-                    self.geotiff_crs = src.crs
-                    self.geotiff_projection = src.crs.to_wkt()
+                try:
+                    with rasterio.open(img_path) as src:
+                        self.img = src.read(1)  # Read the first band
+                        self.geotiff_transform = src.transform
+                        self.geotiff_crs = src.crs
+                        if src.crs:
+                            self.geotiff_projection = src.crs.to_wkt()
+                        else:
+                            self.geotiff_projection = None
+                            print("The TIFF file does not contain coordinate reference system information.")
+                except rasterio.errors.RasterioIOError as e:
+                    print(f"Error loading TIFF file: {str(e)}")
+                    self.img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+                    self.geotiff_transform = None
+                    self.geotiff_crs = None
+                    self.geotiff_projection = None
             else:
                 self.img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+                self.geotiff_transform = None
+                self.geotiff_crs = None
+                self.geotiff_projection = None
 
             if self.img is not None:
                 # Convert to PNG format for internal processing
@@ -1702,6 +1716,8 @@ class MyWindow(QMainWindow):
                 self.apply_shearlet_filter()
                 self.show_manual_interpretation()
                 self.saveButton.setEnabled(True)
+            else:
+                QMessageBox.warning(self, "Error", "Failed to load the image.")
 
     def save_mask(self):
         if self.img is None:
