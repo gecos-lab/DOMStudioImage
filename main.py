@@ -30,6 +30,40 @@ import json
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextEdit
+from scipy.spatial.distance import directed_hausdorff
+import traceback
+from xml.etree.ElementTree import Element, SubElement, tostring
+from xml.dom import minidom
+import re
+from utility import edgelink
+from PyQt5.QtCore import QTimer
+def parse_path(path_data):
+    commands = re.findall(r'([MLHVCSQTAZ])([^MLHVCSQTAZ]*)', path_data.upper())
+    points = []
+    current = [0, 0]
+    for cmd, params in commands:
+        params = [float(p) for p in params.strip().split()]
+        if cmd == 'M':
+            points.extend(params)
+            current = params[-2:]
+        elif cmd == 'L':
+            points.extend(params)
+            current = params[-2:]
+        elif cmd == 'H':
+            for x in params:
+                points.extend([x, current[1]])
+                current[0] = x
+        elif cmd == 'V':
+            for y in params:
+                points.extend([current[0], y])
+                current[1] = y
+        elif cmd == 'Z':
+            if points:
+                points.extend(points[:2])
+        # Note: We're ignoring curve commands (C, S, Q, T, A) for simplicity
+    return points
+def debug_print(message):
+        print(f"DEBUG: {message}")
 
 def euclidean_dist(point1, point2):
     return np.sqrt((point1[0] - point2[0])**2 + (point1[1] - point2[1])**2)
@@ -71,6 +105,155 @@ def a_star(costs, start, end):
     path.reverse()
     return path
 
+class EdgeLinkWindow(QDialog):
+    def __init__(self, image, filter_type, canny_low, canny_high, sobel_ksize, shearlet_min_contrast, parent=None):
+        super().__init__(parent)
+        self.image = image
+        self.filter_type = filter_type
+        self.canny_low = canny_low
+        self.canny_high = canny_high
+        self.sobel_ksize = sobel_ksize
+        self.shearlet_min_contrast = shearlet_min_contrast
+        self.edge_linked_image = None
+        self.edges = None
+        self.edge_lists = None
+        self.original_edges = None  # To store the original edge detection result
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle('Edge Link Visualization')
+        self.setGeometry(100, 100, 800, 800)
+
+        layout = QVBoxLayout()
+
+        self.figure = Figure(figsize=(8, 6))
+        self.canvas = FigureCanvas(self.figure)
+        layout.addWidget(self.canvas)
+
+        # Add sliders for edgelink parameters
+        self.min_length_slider = self.create_slider("Minimum Edge Length", 1, 50, 10)
+        layout.addWidget(self.min_length_slider)
+
+        self.max_gap_slider = self.create_slider("Maximum Gap", 1, 20, 2)
+        layout.addWidget(self.max_gap_slider)
+
+        self.min_angle_slider = self.create_slider("Minimum Angle", 0, 90, 20)
+        layout.addWidget(self.min_angle_slider)
+
+        # Add Apply button
+        self.apply_button = QPushButton("Apply Edge Link")
+        self.apply_button.clicked.connect(self.apply_edge_link)
+        layout.addWidget(self.apply_button)
+
+        self.setLayout(layout)
+
+        # Apply initial edge detection
+        self.apply_edge_detection()
+        self.update_view()
+
+    def create_slider(self, name, min_val, max_val, default_val):
+        slider_layout = QHBoxLayout()
+        slider_layout.addWidget(QLabel(name))
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(min_val, max_val)
+        slider.setValue(default_val)
+        slider.setTickPosition(QSlider.TicksBelow)
+        slider.setTickInterval((max_val - min_val) // 10)
+        slider_layout.addWidget(slider)
+        value_label = QLabel(str(default_val))
+        slider_layout.addWidget(value_label)
+        slider.valueChanged.connect(lambda v: value_label.setText(str(v)))
+        slider.valueChanged.connect(self.reset_view)
+        
+        widget = QWidget()
+        widget.setLayout(slider_layout)
+        return widget
+
+    def apply_edge_detection(self):
+        if self.filter_type == 'canny':
+            self.edges = cv2.Canny(self.image, self.canny_low, self.canny_high)
+        elif self.filter_type == 'sobel':
+            grad_x = cv2.Sobel(self.image, cv2.CV_64F, 1, 0, ksize=self.sobel_ksize)
+            grad_y = cv2.Sobel(self.image, cv2.CV_64F, 0, 1, ksize=self.sobel_ksize)
+            self.edges = np.sqrt(grad_x**2 + grad_y**2)
+            self.edges = cv2.normalize(self.edges, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        elif self.filter_type == 'shearlet':
+            shearlet_system = EdgeSystem(*self.image.shape)
+            self.edges, _ = shearlet_system.detect(self.image, min_contrast=self.shearlet_min_contrast)
+            self.edges = (self.edges * 255).astype(np.uint8)
+        else:
+            QMessageBox.warning(self, "Error", "Invalid filter type")
+            return
+
+        # Convert to binary
+        _, self.edges = cv2.threshold(self.edges, 127, 255, cv2.THRESH_BINARY)
+        self.original_edges = self.edges.copy()  # Store the original edge detection result
+
+    def apply_edge_link(self):
+        if self.edges is None:
+            return
+
+        # Get edgelink parameters from sliders
+        min_length = self.min_length_slider.findChild(QSlider).value()
+        max_gap = self.max_gap_slider.findChild(QSlider).value()
+        min_angle = self.min_angle_slider.findChild(QSlider).value()
+
+        # Apply edge link with parameters
+        edge_linker = edgelink(self.edges, min_length)
+        edge_linker.get_edgelist()
+        self.edge_lists = edge_linker.edgelist
+
+        # Post-process edge lists based on max_gap and min_angle
+        processed_edge_lists = self.post_process_edges(self.edge_lists, max_gap, min_angle)
+
+        # Visualize edge linked result
+        self.edge_linked_image = np.zeros(self.image.shape[:2], dtype=np.uint8)
+        for edge in processed_edge_lists:
+            for point in edge:
+                if 0 <= point[0] < self.edge_linked_image.shape[0] and 0 <= point[1] < self.edge_linked_image.shape[1]:
+                    self.edge_linked_image[int(point[0]), int(point[1])] = 255
+
+        self.update_view()
+
+    def reset_view(self):
+        # Reset the view to show original edges when sliders change
+        self.edge_linked_image = self.original_edges.copy()
+        self.update_view()
+
+    def post_process_edges(self, edge_lists, max_gap, min_angle):
+        processed_edges = []
+        for edge in edge_lists:
+            new_edge = [edge[0]]
+            for i in range(1, len(edge)):
+                if self.point_distance(new_edge[-1], edge[i]) <= max_gap:
+                    if len(new_edge) < 2 or self.angle_between_points(new_edge[-2], new_edge[-1], edge[i]) >= min_angle:
+                        new_edge.append(edge[i])
+                    else:
+                        processed_edges.append(new_edge)
+                        new_edge = [edge[i]]
+                else:
+                    processed_edges.append(new_edge)
+                    new_edge = [edge[i]]
+            processed_edges.append(new_edge)
+        return processed_edges
+
+    def point_distance(self, p1, p2):
+        return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+
+    def angle_between_points(self, p1, p2, p3):
+        v1 = np.array([p1[0] - p2[0], p1[1] - p2[1]])
+        v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
+        angle = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+        return np.degrees(angle)
+
+    def update_view(self):
+        if self.edge_linked_image is None:
+            return
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.imshow(self.edge_linked_image, cmap='gray')
+        ax.axis('off')
+        self.canvas.draw()
 class PrecisionRecallDialog(QDialog):
     def __init__(self, parent=None, canny_data=None, sobel_data=None, shearlet_data=None):
         super().__init__(parent)
@@ -935,7 +1118,8 @@ class MyWindow(QMainWindow):
         self.filtered_img = None
         self.shearlet_system = None
         self.full_view_window = None
-        self.setGeometry(100, 100, 1200, 800)  # Increase initial window size
+        self.edge_link_window = None
+        self.setGeometry(100, 100, 1200, 800)
         self.initUI()
 
     def initUI(self):
@@ -1074,6 +1258,34 @@ class MyWindow(QMainWindow):
 
         self.filter_type_combo.addItem('shearlet')
 
+        # Add filter type selection for EdgeLink
+        self.edge_link_filter_combo = QComboBox()
+        self.edge_link_filter_combo.addItems(['canny', 'sobel', 'shearlet'])
+        rightPanel.addWidget(QLabel("Edge Link Filter"))
+        rightPanel.addWidget(self.edge_link_filter_combo)
+    def open_edge_link_window(self):
+        if self.img is None:
+            QMessageBox.warning(self, "Error", "Please load an image first.")
+            return
+
+        selected_filter = self.edge_link_filter_combo.currentText()
+        
+        # Get current threshold values
+        canny_low = self.cannyThreshold1.value()
+        canny_high = self.cannyThreshold2.value()
+        sobel_ksize = self.sobelKsize.value()
+        shearlet_min_contrast = self.shearletMinContrast.value()
+
+        self.edge_link_window = EdgeLinkWindow(
+            self.img, 
+            selected_filter, 
+            canny_low, 
+            canny_high, 
+            sobel_ksize, 
+            shearlet_min_contrast, 
+            self
+        )
+        self.edge_link_window.show()
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.update_image_sizes()
@@ -1163,6 +1375,9 @@ class MyWindow(QMainWindow):
 
         toolsMenu = menubar.addMenu('Tools')
         imagePropertiesMenu = toolsMenu.addMenu('Image Properties')
+        edgeLinkAction = QAction('Edge Link', self)
+        edgeLinkAction.triggered.connect(self.open_edge_link_window)
+        toolsMenu.addAction(edgeLinkAction)
 
         calculateStatsMenu = toolsMenu.addMenu('Calculate Statistics')
         calculateStatsAction = QAction('Precision and Recall', self)
@@ -1503,81 +1718,135 @@ class MyWindow(QMainWindow):
 
         print("export_to_shapefile function completed")
 
-    def export_to_vector(self):
-        print("Starting export_to_vector function")
-        if self.img is None:
-            print("No image loaded")
-            QMessageBox.warning(self, "Error", "No image loaded.")
-            return
-
-        print("Opening ExportDialog")
-        dialog = ExportDialog(self, "Vector")
-        if dialog.exec_():
-            print("ExportDialog executed successfully")
-            selected_filter = dialog.get_selected_filter()
-            print(f"Selected filter: {selected_filter}")
+    def convert_edges_to_lines(self, edges, simplification_tolerance=1.0):
+        debug_print("Converting edges to SVG paths")
+        try:
+            # Find contours
+            contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_TC89_KCOS)
             
-            print("Getting filtered image")
-            filtered_image = self.get_filtered_image(selected_filter)
-            print(f"Filtered image shape: {filtered_image.shape}")
+            paths = []
+            for contour in contours:
+                # Simplify the contour
+                epsilon = simplification_tolerance * cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, epsilon, True)
+                
+                # Create path data
+                path_data = f"M {approx[0][0][0]} {approx[0][0][1]}"
+                for point in approx[1:]:
+                    path_data += f" L {point[0][0]} {point[0][1]}"
+                path_data += " Z"
+                paths.append(path_data)
+            
+            debug_print(f"Converted edges to {len(paths)} SVG paths")
+            return paths
+        except Exception as e:
+            debug_print(f"Error in convert_edges_to_lines: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return []
 
-            # Convert to binary
-            print("Converting to binary")
-            binary_method, ok = QInputDialog.getItem(self, "Binary Conversion", 
-                                                    "Select binary conversion method:",
-                                                    ["Otsu", "Adaptive"], 0, False)
-            if ok and binary_method:
-                binary_image = self.convert_to_binary(filtered_image, method=binary_method.lower())
-                print(f"Binary conversion completed using {binary_method} method")
+    def create_vector_lines(self, paths):
+        debug_print("Creating SVG content")
+        try:
+            # Create SVG root element
+            svg = Element('svg')
+            svg.set('xmlns', 'http://www.w3.org/2000/svg')
+            svg.set('width', str(self.img.shape[1]))
+            svg.set('height', str(self.img.shape[0]))
+            
+            # Add a white background rectangle
+            background = SubElement(svg, 'rect')
+            background.set('width', '100%')
+            background.set('height', '100%')
+            background.set('fill', 'white')
+
+            # Find the bounding box of all paths
+            all_points = []
+            for path_data in paths:
+                all_points.extend(parse_path(path_data))
+
+            if all_points:
+                min_x, min_y = min(all_points[0::2]), min(all_points[1::2])
+                max_x, max_y = max(all_points[0::2]), max(all_points[1::2])
+
+                # Calculate scaling factor to fit all paths within the SVG
+                width = max_x - min_x
+                height = max_y - min_y
+                scale = min(self.img.shape[1] / width, self.img.shape[0] / height) * 0.9  # 90% of the available space
+
+                # Calculate translation to center the paths
+                translate_x = (self.img.shape[1] - width * scale) / 2 - min_x * scale
+                translate_y = (self.img.shape[0] - height * scale) / 2 - min_y * scale
+
+                # Create a group for all paths with the calculated transform
+                group = SubElement(svg, 'g')
+                group.set('transform', f'translate({translate_x},{translate_y}) scale({scale})')
+                
+                for path_data in paths:
+                    path = SubElement(group, 'path')
+                    path.set('fill', 'none')
+                    path.set('stroke', 'black')
+                    path.set('stroke-width', '0.5')
+                    path.set('d', path_data)
             else:
-                print("Binary conversion cancelled")
+                debug_print("No valid points found in paths")
+
+            # Convert to string
+            rough_string = tostring(svg, 'utf-8')
+            reparsed = minidom.parseString(rough_string)
+            pretty_svg = reparsed.toprettyxml(indent="  ")
+            
+            debug_print(f"Created SVG content with {len(paths)} paths")
+            return pretty_svg
+        except Exception as e:
+            debug_print(f"Error in create_vector_lines: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def export_to_vector(self):
+        debug_print("Starting export_to_vector")
+        try:
+            if self.img is None:
+                raise ValueError("No image loaded")
+
+            dialog = ExportDialog(self, "Vector")
+            if not dialog.exec_():
+                debug_print("Export dialog cancelled")
                 return
 
-            print("Converting binary image to lines")
-            lines = self.image_to_lines(binary_image)
-            print(f"Number of lines: {len(lines)}")
+            selected_filter = dialog.get_selected_filter()
+            debug_print(f"Selected filter: {selected_filter}")
 
-            print("Creating GeoDataFrame")
-            gdf = gpd.GeoDataFrame({'geometry': lines})
-            print(f"GeoDataFrame created with {len(gdf)} rows")
+            filtered_image = self.get_filtered_image(selected_filter)
+            debug_print(f"Filtered image shape: {filtered_image.shape}")
 
-            if hasattr(self, 'geotiff_crs'):
-                print(f"Setting CRS: {self.geotiff_crs}")
-                gdf.crs = self.geotiff_crs
-            else:
-                print("No CRS information available")
+            paths = self.convert_edges_to_lines(filtered_image)
+            if not paths:
+                raise ValueError("No valid paths were detected")
 
-            # Save to various vector formats
-            formats = {
-                "GeoJSON": ("*.geojson", gdf.to_file),
-                "KML": ("*.kml", gdf.to_file),
-                "GeoPackage": ("*.gpkg", gdf.to_file),
-            }
+            svg_content = self.create_vector_lines(paths)
+            if not svg_content:
+                raise ValueError("Failed to create SVG content")
 
-            format_choice, ok = QInputDialog.getItem(self, "Choose Vector Format", 
-                                                    "Select output format:", 
-                                                    list(formats.keys()), 0, False)
-            
-            if ok and format_choice:
-                file_extension, save_function = formats[format_choice]
-                save_path, _ = QFileDialog.getSaveFileName(self, f"Save {format_choice}", "", f"{format_choice} Files ({file_extension})")
-                if save_path:
-                    print(f"Save path selected: {save_path}")
-                    try:
-                        print(f"Attempting to save as {format_choice}")
-                        save_function(save_path, driver=format_choice)
-                        print(f"{format_choice} saved successfully")
-                        QMessageBox.information(self, "Success", f"File saved as {format_choice}")
-                    except Exception as e:
-                        print(f"Error saving {format_choice}: {str(e)}")
-                        QMessageBox.critical(self, "Error", f"Failed to save {format_choice}: {str(e)}")
-                else:
-                    print("Save operation cancelled")
-            else:
-                print("Format selection cancelled")
+            save_path, _ = QFileDialog.getSaveFileName(self, "Save Vector", "", "SVG Files (*.svg)")
+            if not save_path:
+                debug_print("Save operation cancelled")
+                return
 
-        print("export_to_vector function completed")
+            with open(save_path, 'w', encoding='utf-8') as f:
+                f.write(svg_content)
 
+            debug_print(f"Saving to {save_path}")
+            QMessageBox.information(self, "Success", "File saved as SVG")
+            debug_print("Export completed successfully")
+
+        except Exception as e:
+            error_msg = f"Error in export_to_vector: {str(e)}"
+            debug_print(error_msg)
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", error_msg)
     def export_to_png(self):
         if self.img is None:
             QMessageBox.warning(self, "Error", "No image loaded.")
@@ -1681,27 +1950,13 @@ class MyWindow(QMainWindow):
         if img_path:
             if img_path.lower().endswith(('.tif', '.tiff')):
                 # Load GeoTIFF
-                try:
-                    with rasterio.open(img_path) as src:
-                        self.img = src.read(1)  # Read the first band
-                        self.geotiff_transform = src.transform
-                        self.geotiff_crs = src.crs
-                        if src.crs:
-                            self.geotiff_projection = src.crs.to_wkt()
-                        else:
-                            self.geotiff_projection = None
-                            print("The TIFF file does not contain coordinate reference system information.")
-                except rasterio.errors.RasterioIOError as e:
-                    print(f"Error loading TIFF file: {str(e)}")
-                    self.img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-                    self.geotiff_transform = None
-                    self.geotiff_crs = None
-                    self.geotiff_projection = None
+                with rasterio.open(img_path) as src:
+                    self.img = src.read(1)  # Read the first band
+                    self.geotiff_transform = src.transform
+                    self.geotiff_crs = src.crs
+                    self.geotiff_projection = src.crs.to_wkt()
             else:
                 self.img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-                self.geotiff_transform = None
-                self.geotiff_crs = None
-                self.geotiff_projection = None
 
             if self.img is not None:
                 # Convert to PNG format for internal processing
@@ -1716,8 +1971,6 @@ class MyWindow(QMainWindow):
                 self.apply_shearlet_filter()
                 self.show_manual_interpretation()
                 self.saveButton.setEnabled(True)
-            else:
-                QMessageBox.warning(self, "Error", "Failed to load the image.")
 
     def save_mask(self):
         if self.img is None:
