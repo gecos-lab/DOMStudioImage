@@ -35,7 +35,7 @@ import traceback
 from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom import minidom
 import re
-from utility import edgelink
+from utility import edgelink, cleanedgelist
 from PyQt5.QtCore import QTimer
 def parse_path(path_data):
     commands = re.findall(r'([MLHVCSQTAZ])([^MLHVCSQTAZ]*)', path_data.upper())
@@ -117,7 +117,7 @@ class EdgeLinkWindow(QDialog):
         self.edge_linked_image = None
         self.edges = None
         self.edge_lists = None
-        self.original_edges = None  # To store the original edge detection result
+        self.original_edges = None
         self.initUI()
 
     def initUI(self):
@@ -140,10 +140,19 @@ class EdgeLinkWindow(QDialog):
         self.min_angle_slider = self.create_slider("Minimum Angle", 0, 90, 20)
         layout.addWidget(self.min_angle_slider)
 
+        # Add Clean Edge Length slider
+        self.clean_edge_length_slider = self.create_slider("Clean Edge Min Length", 1, 50, 5)
+        layout.addWidget(self.clean_edge_length_slider)
+
         # Add Apply button
         self.apply_button = QPushButton("Apply Edge Link")
         self.apply_button.clicked.connect(self.apply_edge_link)
         layout.addWidget(self.apply_button)
+
+        # Add Clean Edges button
+        self.clean_edges_button = QPushButton("Clean Short Edges")
+        self.clean_edges_button.clicked.connect(self.clean_short_edges)
+        layout.addWidget(self.clean_edges_button)
 
         self.setLayout(layout)
 
@@ -201,20 +210,37 @@ class EdgeLinkWindow(QDialog):
         # Apply edge link with parameters
         edge_linker = edgelink(self.edges, min_length)
         edge_linker.get_edgelist()
-        self.edge_lists = edge_linker.edgelist
+        self.edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
 
         # Post-process edge lists based on max_gap and min_angle
         processed_edge_lists = self.post_process_edges(self.edge_lists, max_gap, min_angle)
 
-        # Visualize edge linked result
-        self.edge_linked_image = np.zeros(self.image.shape[:2], dtype=np.uint8)
-        for edge in processed_edge_lists:
-            for point in edge:
-                if 0 <= point[0] < self.edge_linked_image.shape[0] and 0 <= point[1] < self.edge_linked_image.shape[1]:
-                    self.edge_linked_image[int(point[0]), int(point[1])] = 255
+        self.visualize_edge_lists(processed_edge_lists)
 
-        self.update_view()
+    def clean_short_edges(self):
+        if self.edge_lists is None:
+            QMessageBox.warning(self, "Error", "Please apply edge link first.")
+            return
 
+        min_length = self.clean_edge_length_slider.findChild(QSlider).value()
+        
+        # Convert edge lists to the format expected by cleanedgelist
+        converted_edge_lists = []
+        for edge in self.edge_lists:
+            converted_edge = np.array(edge)
+            if converted_edge.shape[0] > 0:
+                converted_edge_lists.append(converted_edge)
+
+        try:
+            cleaned_edge_lists = cleanedgelist(converted_edge_lists, min_length)
+            
+            # Convert cleaned edge lists back to our format
+            final_edge_lists = [edge.tolist() for edge in cleaned_edge_lists if edge.shape[0] > 0]
+            
+            self.visualize_edge_lists(final_edge_lists)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"An error occurred while cleaning edges: {str(e)}")
+            print(f"Error details: {traceback.format_exc()}")
     def reset_view(self):
         # Reset the view to show original edges when sliders change
         self.edge_linked_image = self.original_edges.copy()
@@ -245,7 +271,14 @@ class EdgeLinkWindow(QDialog):
         v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
         angle = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
         return np.degrees(angle)
+    def visualize_edge_lists(self, edge_lists):
+        self.edge_linked_image = np.zeros(self.image.shape[:2], dtype=np.uint8)
+        for edge in edge_lists:
+            for point in edge:
+                if 0 <= point[0] < self.edge_linked_image.shape[0] and 0 <= point[1] < self.edge_linked_image.shape[1]:
+                    self.edge_linked_image[int(point[0]), int(point[1])] = 255
 
+        self.update_view()
     def update_view(self):
         if self.edge_linked_image is None:
             return
@@ -254,6 +287,22 @@ class EdgeLinkWindow(QDialog):
         ax.imshow(self.edge_linked_image, cmap='gray')
         ax.axis('off')
         self.canvas.draw()
+    def post_process_edges(self, edge_lists, max_gap, min_angle):
+        processed_edges = []
+        for edge in edge_lists:
+            new_edge = [edge[0]]
+            for i in range(1, len(edge)):
+                if self.point_distance(new_edge[-1], edge[i]) <= max_gap:
+                    if len(new_edge) < 2 or self.angle_between_points(new_edge[-2], new_edge[-1], edge[i]) >= min_angle:
+                        new_edge.append(edge[i])
+                    else:
+                        processed_edges.append(np.array(new_edge))
+                        new_edge = [edge[i]]
+                else:
+                    processed_edges.append(np.array(new_edge))
+                    new_edge = [edge[i]]
+            processed_edges.append(np.array(new_edge))
+        return processed_edges
 class PrecisionRecallDialog(QDialog):
     def __init__(self, parent=None, canny_data=None, sobel_data=None, shearlet_data=None):
         super().__init__(parent)
