@@ -37,6 +37,9 @@ from xml.dom import minidom
 import re
 from utility import edgelink, cleanedgelist
 from PyQt5.QtCore import QTimer
+from skimage.morphology import skeletonize
+from skimage.morphology import thin
+
 def parse_path(path_data):
     commands = re.findall(r'([MLHVCSQTAZ])([^MLHVCSQTAZ]*)', path_data.upper())
     points = []
@@ -1236,52 +1239,65 @@ class MyWindow(QMainWindow):
         displayGroup.setLayout(displayLayout)
         rightPanel.addWidget(displayGroup)
 
-        # Controls for Canny Filter
-        cannyControlsGroup = QGroupBox("Canny Filter with Sliders")
-        cannyLayout = QVBoxLayout()
+        # Controls for all filters
+        filterControlsGroup = QGroupBox("Filter Controls")
+        filterLayout = QVBoxLayout()
+
+        # Canny Threshold 1
         self.cannyThreshold1 = QSlider(Qt.Horizontal)
         self.cannyThreshold1.setRange(0, 255)
         self.cannyThreshold1.setValue(50)
-        self.cannyThreshold1.valueChanged.connect(self.update_canny_label)
-        cannyLayout.addWidget(QLabel("Threshold 1"))
-        cannyLayout.addWidget(self.cannyThreshold1)
+        self.cannyThreshold1.valueChanged.connect(self.update_all_filters)
+        filterLayout.addWidget(QLabel("Canny Threshold 1"))
+        filterLayout.addWidget(self.cannyThreshold1)
         self.cannyThreshold1_label = QLabel("50")
-        cannyLayout.addWidget(self.cannyThreshold1_label)
+        filterLayout.addWidget(self.cannyThreshold1_label)
 
+        # Canny Threshold 2
         self.cannyThreshold2 = QSlider(Qt.Horizontal)
         self.cannyThreshold2.setRange(0, 255)
         self.cannyThreshold2.setValue(150)
-        self.cannyThreshold2.valueChanged.connect(self.update_canny_label)
-        cannyLayout.addWidget(QLabel("Threshold 2"))
-        cannyLayout.addWidget(self.cannyThreshold2)
+        self.cannyThreshold2.valueChanged.connect(self.update_all_filters)
+        filterLayout.addWidget(QLabel("Canny Threshold 2"))
+        filterLayout.addWidget(self.cannyThreshold2)
         self.cannyThreshold2_label = QLabel("150")
-        cannyLayout.addWidget(self.cannyThreshold2_label)
+        filterLayout.addWidget(self.cannyThreshold2_label)
 
-        cannyControlsGroup.setLayout(cannyLayout)
-        rightPanel.addWidget(cannyControlsGroup)
-
-        # Controls for Sobel Filter
-        sobelControlsGroup = QGroupBox("Sobel Filter with Sliders")
-        sobelLayout = QVBoxLayout()
+        # Sobel Kernel Size
         self.sobelKsize = QSlider(Qt.Horizontal)
         self.sobelKsize.setRange(1, 31)
         self.sobelKsize.setValue(3)
         self.sobelKsize.setSingleStep(2)
         self.sobelKsize.setTickInterval(2)
         self.sobelKsize.setTickPosition(QSlider.TicksBelow)
-        self.sobelKsize.valueChanged.connect(self.update_sobel_label)
-        sobelLayout.addWidget(QLabel("Kernel Size"))
-        sobelLayout.addWidget(self.sobelKsize)
+        self.sobelKsize.valueChanged.connect(self.update_all_filters)
+        filterLayout.addWidget(QLabel("Sobel Kernel Size"))
+        filterLayout.addWidget(self.sobelKsize)
         self.sobelKsize_label = QLabel("3")
-        sobelLayout.addWidget(self.sobelKsize_label)
-        sobelControlsGroup.setLayout(sobelLayout)
-        rightPanel.addWidget(sobelControlsGroup)
+        filterLayout.addWidget(self.sobelKsize_label)
 
-        self.filter_type_combo = QComboBox()
-        self.filter_type_combo.addItems(['canny', 'sobel'])
-        rightPanel.addWidget(QLabel("Manual Interpretation Filter"))
-        rightPanel.addWidget(self.filter_type_combo)
+        # Shearlet Min Contrast
+        self.shearletMinContrast = QSlider(Qt.Horizontal)
+        self.shearletMinContrast.setRange(0, 100)
+        self.shearletMinContrast.setValue(10)
+        self.shearletMinContrast.valueChanged.connect(self.update_all_filters)
+        filterLayout.addWidget(QLabel("Shearlet Min Contrast"))
+        filterLayout.addWidget(self.shearletMinContrast)
+        self.shearletMinContrast_label = QLabel("10")
+        filterLayout.addWidget(self.shearletMinContrast_label)
 
+        # Skeletonize Iterations
+        self.skeletonizeIterations = QSlider(Qt.Horizontal)
+        self.skeletonizeIterations.setRange(0, 10)
+        self.skeletonizeIterations.setValue(0)
+        self.skeletonizeIterations.valueChanged.connect(self.update_all_filters)
+        filterLayout.addWidget(QLabel("Skeletonize Iterations"))
+        filterLayout.addWidget(self.skeletonizeIterations)
+        self.skeletonizeIterations_label = QLabel("0")
+        filterLayout.addWidget(self.skeletonizeIterations_label)
+
+        filterControlsGroup.setLayout(filterLayout)
+        rightPanel.addWidget(filterControlsGroup)
         self.createMenus()
 
         self.figure_shearlet = Figure(figsize=(5, 5))
@@ -1291,27 +1307,28 @@ class MyWindow(QMainWindow):
         displayLayout.addWidget(QLabel("Shearlet Filtered Image"), 2, 1)
         displayLayout.addWidget(self.canvas_shearlet, 3, 1)
 
-        # Controls for Shearlet Filter
-        shearletControlsGroup = QGroupBox("Shearlet Filter with Sliders")
-        shearletLayout = QVBoxLayout()
-        self.shearletMinContrast = QSlider(Qt.Horizontal)
-        self.shearletMinContrast.setRange(0, 100)
-        self.shearletMinContrast.setValue(10)
-        self.shearletMinContrast.valueChanged.connect(self.update_shearlet_label)
-        shearletLayout.addWidget(QLabel("Min Contrast"))
-        shearletLayout.addWidget(self.shearletMinContrast)
-        self.shearletMinContrast_label = QLabel("10")
-        shearletLayout.addWidget(self.shearletMinContrast_label)
-        shearletControlsGroup.setLayout(shearletLayout)
-        rightPanel.addWidget(shearletControlsGroup)
-
-        self.filter_type_combo.addItem('shearlet')
-
         # Add filter type selection for EdgeLink
         self.edge_link_filter_combo = QComboBox()
         self.edge_link_filter_combo.addItems(['canny', 'sobel', 'shearlet'])
         rightPanel.addWidget(QLabel("Edge Link Filter"))
         rightPanel.addWidget(self.edge_link_filter_combo)
+
+    def update_all_filters(self):
+        self.cannyThreshold1_label.setText(str(self.cannyThreshold1.value()))
+        self.cannyThreshold2_label.setText(str(self.cannyThreshold2.value()))
+        self.sobelKsize_label.setText(str(self.sobelKsize.value()))
+        self.shearletMinContrast_label.setText(str(self.shearletMinContrast.value()))
+        self.skeletonizeIterations_label.setText(str(self.skeletonizeIterations.value()))
+        self.apply_canny_filter()
+        self.apply_sobel_filter()
+        self.apply_shearlet_filter()
+
+    def apply_skeletonize(self, edges):
+        skeleton_iterations = self.skeletonizeIterations.value()
+        if skeleton_iterations > 0:
+            for _ in range(skeleton_iterations):
+                edges = thin(edges > 0)
+        return (edges * 255).astype(np.uint8)
     def open_edge_link_window(self):
         if self.img is None:
             QMessageBox.warning(self, "Error", "Please load an image first.")
@@ -2029,15 +2046,21 @@ class MyWindow(QMainWindow):
         if dialog.exec_() == QDialog.Accepted:
             # Mask saved inside the dialog; no need to do anything here.
             pass
+    def update_canny_filter(self):
+        self.cannyThreshold1_label.setText(str(self.cannyThreshold1.value()))
+        self.cannyThreshold2_label.setText(str(self.cannyThreshold2.value()))
+        self.skeletonizeIterations_label.setText(str(self.skeletonizeIterations.value()))
+        self.apply_canny_filter()
 
     def apply_canny_filter(self):
         if self.img is None:
             return
         threshold1 = self.cannyThreshold1.value()
         threshold2 = self.cannyThreshold2.value()
+        
         edges = cv2.Canny(self.img, threshold1, threshold2)
+        edges = self.apply_skeletonize(edges)
         self.show_canny_image(edges)
-
     def apply_sobel_filter(self):
         if self.img is None:
             return
@@ -2046,9 +2069,9 @@ class MyWindow(QMainWindow):
             ksize += 1  # Ensure ksize is odd
         grad_x = cv2.Sobel(self.img, cv2.CV_64F, 1, 0, ksize=ksize)
         grad_y = cv2.Sobel(self.img, cv2.CV_64F, 0, 1, ksize=ksize)
-        abs_grad_x = cv2.convertScaleAbs(grad_x)
-        abs_grad_y = cv2.convertScaleAbs(grad_y)
-        sobel = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
+        sobel = np.sqrt(grad_x**2 + grad_y**2)
+        sobel = cv2.normalize(sobel, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        sobel = self.apply_skeletonize(sobel)
         self.show_sobel_image(sobel)
 
     def show_original_image(self):
@@ -2069,7 +2092,10 @@ class MyWindow(QMainWindow):
 
     def on_click_canny(self, event):
         if event.button == 1:  # Left click
-            edges = cv2.Canny(self.img, self.cannyThreshold1.value(), self.cannyThreshold2.value())
+            threshold1 = self.cannyThreshold1.value()
+            threshold2 = self.cannyThreshold2.value()
+            edges = cv2.Canny(self.img, threshold1, threshold2)
+            edges = self.apply_skeletonize(edges)
             self.open_full_view(edges, "Canny Filtered Image", cmap='gray')
 
     def on_click_sobel(self, event):
@@ -2079,9 +2105,9 @@ class MyWindow(QMainWindow):
                 ksize += 1
             grad_x = cv2.Sobel(self.img, cv2.CV_64F, 1, 0, ksize=ksize)
             grad_y = cv2.Sobel(self.img, cv2.CV_64F, 0, 1, ksize=ksize)
-            abs_grad_x = cv2.convertScaleAbs(grad_x)
-            abs_grad_y = cv2.convertScaleAbs(grad_y)
-            sobel = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
+            sobel = np.sqrt(grad_x**2 + grad_y**2)
+            sobel = cv2.normalize(sobel, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+            sobel = self.apply_skeletonize(sobel)
             self.open_full_view(sobel, "Sobel Filtered Image", cmap='gray')
 
     def on_click_manual(self, event):
@@ -2114,6 +2140,8 @@ class MyWindow(QMainWindow):
             return
         min_contrast = self.shearletMinContrast.value()
         edges, orientations = self.shearlet_system.detect(self.img, min_contrast=min_contrast)
+        edges = (edges * 255).astype(np.uint8)
+        edges = self.apply_skeletonize(edges)
         thinned_edges = mask(edges, thin_mask(edges))
         edge_overlay = overlay(self.img, thinned_edges)
         self.show_shearlet_image(edge_overlay)
@@ -2125,6 +2153,8 @@ class MyWindow(QMainWindow):
         if event.button == 1:  # Left click
             min_contrast = self.shearletMinContrast.value()
             edges, orientations = self.shearlet_system.detect(self.img, min_contrast=min_contrast)
+            edges = (edges * 255).astype(np.uint8)
+            edges = self.apply_skeletonize(edges)
             thinned_edges = mask(edges, thin_mask(edges))
             edge_overlay = overlay(self.img, thinned_edges)
             self.open_full_view(edge_overlay, "Shearlet Filtered Image", cmap=None)
