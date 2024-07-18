@@ -206,12 +206,11 @@ class EdgeLinkWindow(QDialog):
             return
 
         # Get edgelink parameters from sliders
-        min_length = self.min_length_slider.findChild(QSlider).value()
+        minilength = self.min_length_slider.findChild(QSlider).value()
         max_gap = self.max_gap_slider.findChild(QSlider).value()
         min_angle = self.min_angle_slider.findChild(QSlider).value()
 
-        # Apply edge link with parameters
-        edge_linker = edgelink(self.edges, min_length)
+        edge_linker = edgelink(self.edges, minilength)  # Changed 'min_length' to 'minilength'
         edge_linker.get_edgelist()
         self.edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
 
@@ -1313,6 +1312,12 @@ class MyWindow(QMainWindow):
         rightPanel.addWidget(QLabel("Edge Link Filter"))
         rightPanel.addWidget(self.edge_link_filter_combo)
 
+        # Add for manual interpretation
+        self.filter_type_combo = QComboBox()
+        self.filter_type_combo.addItems(['canny', 'sobel', 'shearlet'])
+        rightPanel.addWidget(QLabel("Manual Interpretation Filter"))
+        rightPanel.addWidget(self.filter_type_combo)
+
     def update_all_filters(self):
         self.cannyThreshold1_label.setText(str(self.cannyThreshold1.value()))
         self.cannyThreshold2_label.setText(str(self.cannyThreshold2.value()))
@@ -2112,7 +2117,8 @@ class MyWindow(QMainWindow):
 
     def on_click_manual(self, event):
         if event.button == 1:  # Left click
-            self.open_full_view(self.img, "Manual Interpretation", is_manual_interpretation=True, filter_type=self.filter_type_combo.currentText())
+            selected_filter = self.filter_type_combo.currentText()
+            self.open_full_view(self.img, "Manual Interpretation", is_manual_interpretation=True, filter_type=selected_filter)
 
     def open_full_view(self, image, title, cmap='gray', is_manual_interpretation=False, filter_type='canny'):
         self.full_view_window = FullViewWindow(

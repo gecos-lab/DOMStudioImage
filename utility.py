@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import random
 import os
 import shutil
+from skimage.morphology import skeletonize
+import cv2
 
 class edgelink(object):
     """
@@ -60,8 +62,16 @@ class edgelink(object):
         if minilength != 'Ignore':
             self.minilength = minilength
             # print('edgelink: Minimum length is % d.\n' % minilength)
-
+        self.minilength = minilength
+        self.edgelist = None
+        self.etype = None
     def get_edgelist(self):
+        # Apply Otsu's thresholding
+        _, binary = cv2.threshold(self.edgeim, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Apply skeletonization
+        skeleton = skeletonize(binary > 0)
+        self.edgeim = (skeleton * 255).astype(np.uint8)
         self.edgeim = (self.edgeim.copy() != 0)                    # Make sure image is binary
         self.clean = bwmorph(self.edgeim.copy(), 'clean')         # Remove isolated pixels
         self.thin = bwmorph(self.clean, 'thin')          # Make sure edges are thinned
