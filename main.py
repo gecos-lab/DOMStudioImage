@@ -107,160 +107,180 @@ def a_star(costs, start, end):
     path.append(start)
     path.reverse()
     return path
-class BaseFilterTab(QWidget):
+#
+
+class FilterTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.original_image = None
+        self.input_image = None
         self.filtered_image = None
-        self.skeletonized_image = None
+        self.edge_linked_image = None
         self.initUI()
 
     def initUI(self):
         layout = QVBoxLayout()
-        
-        # Image display
-        self.figure = Figure(figsize=(5, 5))
-        self.canvas = FigureCanvas(self.figure)
-        layout.addWidget(self.canvas)
-        
-        # Controls
-        controls_layout = QHBoxLayout()
-        self.apply_filter_button = QPushButton("Apply Filter")
-        self.apply_filter_button.clicked.connect(self.apply_filter)
-        controls_layout.addWidget(self.apply_filter_button)
-        
-        self.apply_skeleton_button = QPushButton("Apply Skeletonization")
-        self.apply_skeleton_button.clicked.connect(self.apply_skeletonization)
-        controls_layout.addWidget(self.apply_skeleton_button)
-        
-        self.apply_edgelink_button = QPushButton("Apply Edge Link")
-        self.apply_edgelink_button.clicked.connect(self.apply_edgelink)
-        controls_layout.addWidget(self.apply_edgelink_button)
-        
-        layout.addLayout(controls_layout)
-        
+
+        image_layout = QHBoxLayout()
+
+        # Input image
+        self.input_figure = Figure(figsize=(5, 5))
+        self.input_canvas = FigureCanvas(self.input_figure)
+
+        # Filtered image
+        self.filtered_figure = Figure(figsize=(5, 5))
+        self.filtered_canvas = FigureCanvas(self.filtered_figure)
+
+        image_layout.addWidget(self.input_canvas)
+        image_layout.addWidget(self.filtered_canvas)
+
+        layout.addLayout(image_layout)
+
+        # Controls layout will be added by subclasses
+        self.controls_layout = QVBoxLayout()
+        layout.addLayout(self.controls_layout)
+
+        # Skeletonization checkbox
+        self.skeletonize_checkbox = QCheckBox("Apply Skeletonization")
+        self.skeletonize_checkbox.stateChanged.connect(self.update_filter)
+        layout.addWidget(self.skeletonize_checkbox)
+
+        # Edge Link button
+        self.edge_link_button = QPushButton("Edge Link")
+        self.edge_link_button.clicked.connect(self.open_edge_link_window)
+        layout.addWidget(self.edge_link_button)
+
         self.setLayout(layout)
 
-    def set_image(self, image):
-        self.original_image = image
-        self.show_image(self.original_image)
+    def set_input_image(self, image):
+        self.input_image = image
+        self.show_input_image()
+        self.update_filter()
 
-    def show_image(self, figure, image, cmap='gray'):
-        figure.clear()
-        ax = figure.add_subplot(111)
-        ax.imshow(image, cmap=cmap, aspect='auto')
+    def show_input_image(self):
+        self.input_figure.clear()
+        ax = self.input_figure.add_subplot(111)
+        ax.imshow(self.input_image, cmap='gray')
         ax.axis('off')
-        figure.tight_layout(pad=0)
-        figure.canvas.draw()
+        self.input_canvas.draw()
 
-    def apply_filter(self):
+    def show_filtered_image(self):
+        self.filtered_figure.clear()
+        ax = self.filtered_figure.add_subplot(111)
+        ax.imshow(self.filtered_image, cmap='gray')
+        ax.axis('off')
+        self.filtered_canvas.draw()
+
+    def update_filter(self):
         # To be implemented in subclasses
         pass
 
-    def apply_skeletonize(self, image):
+    def apply_skeletonization(self, image):
         return skeletonize(image > 0).astype(np.uint8) * 255
 
-    def apply_edgelink(self):
-        if self.skeletonized_image is not None:
-            edge_linker = edgelink(self.skeletonized_image, minilength=10)  # Adjust minilength as needed
-            edge_linker.get_edgelist()
-            # Visualize edge_linker.edgelist here
-            # For now, we'll just show a message
-            QMessageBox.information(self, "Edge Link", "Edge linking applied. Visualization to be implemented.")
+    def open_edge_link_window(self):
+        if self.filtered_image is None:
+            return
+        self.edge_link_window = EdgeLinkWindow(self.filtered_image, self.parent())
+        self.edge_link_window.show()
 
-class CannyFilterTab(BaseFilterTab):
+
+class CannyFilterTab(FilterTab):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.initUI()
+        self.setup_controls()
 
-    def initUI(self):
-        super().initUI()
-        # Add Canny-specific controls
-        self.threshold1_slider = QSlider(Qt.Horizontal)
-        self.threshold1_slider.setRange(0, 255)
-        self.threshold1_slider.setValue(100)
-        self.layout().addWidget(QLabel("Threshold 1"))
-        self.layout().addWidget(self.threshold1_slider)
+    def setup_controls(self):
+        # Threshold sliders
+        self.threshold1 = QSlider(Qt.Horizontal)
+        self.threshold1.setRange(0, 255)
+        self.threshold1.setValue(50)
+        self.threshold1.valueChanged.connect(self.update_filter)
 
-        self.threshold2_slider = QSlider(Qt.Horizontal)
-        self.threshold2_slider.setRange(0, 255)
-        self.threshold2_slider.setValue(200)
-        self.layout().addWidget(QLabel("Threshold 2"))
-        self.layout().addWidget(self.threshold2_slider)
+        self.threshold2 = QSlider(Qt.Horizontal)
+        self.threshold2.setRange(0, 255)
+        self.threshold2.setValue(150)
+        self.threshold2.valueChanged.connect(self.update_filter)
 
-    def apply_filter(self):
-        if self.original_image is not None:
-            self.filtered_image = cv2.Canny(self.original_image, 
-                                            self.threshold1_slider.value(), 
-                                            self.threshold2_slider.value())
-            self.show_image(self.filtered_image)
+        self.controls_layout.addWidget(QLabel("Threshold 1"))
+        self.controls_layout.addWidget(self.threshold1)
+        self.controls_layout.addWidget(QLabel("Threshold 2"))
+        self.controls_layout.addWidget(self.threshold2)
 
-class CannyFilterTab(BaseFilterTab):
+    def update_filter(self):
+        if self.input_image is not None:
+            self.filtered_image = cv2.Canny(self.input_image,
+                                            self.threshold1.value(),
+                                            self.threshold2.value())
+            if self.skeletonize_checkbox.isChecked():
+                self.filtered_image = self.apply_skeletonization(self.filtered_image)
+            self.show_filtered_image()
+
+
+class SobelFilterTab(FilterTab):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.initUI()
+        self.setup_controls()
 
-    def initUI(self):
-        super().initUI()
-        # Add Canny-specific controls
-        self.threshold1_slider = QSlider(Qt.Horizontal)
-        self.threshold1_slider.setRange(0, 255)
-        self.threshold1_slider.setValue(100)
-        self.layout().addWidget(QLabel("Threshold 1"))
-        self.layout().addWidget(self.threshold1_slider)
+    def setup_controls(self):
+        # Kernel size slider
+        self.ksize = QSlider(Qt.Horizontal)
+        self.ksize.setRange(1, 31)
+        self.ksize.setValue(3)
+        self.ksize.setSingleStep(2)
+        self.ksize.valueChanged.connect(self.update_filter)
 
-        self.threshold2_slider = QSlider(Qt.Horizontal)
-        self.threshold2_slider.setRange(0, 255)
-        self.threshold2_slider.setValue(200)
-        self.layout().addWidget(QLabel("Threshold 2"))
-        self.layout().addWidget(self.threshold2_slider)
+        self.controls_layout.addWidget(QLabel("Kernel Size"))
+        self.controls_layout.addWidget(self.ksize)
 
-    def apply_filter(self):
-        if self.original_image is not None:
-            self.filtered_image = cv2.Canny(self.original_image, 
-                                            self.threshold1_slider.value(), 
-                                            self.threshold2_slider.value())
-            self.show_image(self.filtered_image)
+    def update_filter(self):
+        if self.input_image is not None:
+            ksize = self.ksize.value()
+            if ksize % 2 == 0:
+                ksize += 1
+            grad_x = cv2.Sobel(self.input_image, cv2.CV_64F, 1, 0, ksize=ksize)
+            grad_y = cv2.Sobel(self.input_image, cv2.CV_64F, 0, 1, ksize=ksize)
+            self.filtered_image = cv2.addWeighted(cv2.convertScaleAbs(grad_x), 0.5,
+                                                  cv2.convertScaleAbs(grad_y), 0.5, 0)
+            if self.skeletonize_checkbox.isChecked():
+                self.filtered_image = self.apply_skeletonization(self.filtered_image)
+            self.show_filtered_image()
 
-    class ShearletFilterTab(BaseFilterTab):
-        def __init__(self, parent=None):
-            super().__init__(parent)
-            self.shearlet_system = None
-            self.initUI()
 
-        def initUI(self):
-            super().initUI()
-            # Add Shearlet-specific controls
-            self.min_contrast_slider = QSlider(Qt.Horizontal)
-            self.min_contrast_slider.setRange(0, 100)
-            self.min_contrast_slider.setValue(10)
-            self.layout().addWidget(QLabel("Min Contrast"))
-            self.layout().addWidget(self.min_contrast_slider)
+class ShearletFilterTab(FilterTab):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.shearlet_system = None
+        self.setup_controls()
 
-        def set_image(self, image):
-            super().set_image(image)
-            self.shearlet_system = EdgeSystem(*image.shape)
+    def setup_controls(self):
+        # Min contrast slider
+        self.min_contrast = QSlider(Qt.Horizontal)
+        self.min_contrast.setRange(0, 100)
+        self.min_contrast.setValue(10)
+        self.min_contrast.valueChanged.connect(self.update_filter)
 
-        def apply_filter(self):
-            if self.original_image is not None and self.shearlet_system is not None:
-                edges, _ = self.shearlet_system.detect(self.original_image, 
-                                                    min_contrast=self.min_contrast_slider.value())
-                self.filtered_image = (edges * 255).astype(np.uint8)
-                self.show_image(self.filtered_image)
+        self.controls_layout.addWidget(QLabel("Min Contrast"))
+        self.controls_layout.addWidget(self.min_contrast)
+
+    def set_input_image(self, image):
+        super().set_input_image(image)
+        self.shearlet_system = EdgeSystem(*image.shape)
+
+    def update_filter(self):
+        if self.input_image is not None and self.shearlet_system is not None:
+            edges, _ = self.shearlet_system.detect(self.input_image,
+                                                   min_contrast=self.min_contrast.value())
+            self.filtered_image = (edges * 255).astype(np.uint8)
+            if self.skeletonize_checkbox.isChecked():
+                self.filtered_image = self.apply_skeletonization(self.filtered_image)
+            self.show_filtered_image()
+
 
 class EdgeLinkWindow(QDialog):
-    def __init__(self, image, filter_type, canny_low, canny_high, sobel_ksize, shearlet_min_contrast, parent=None):
+    def __init__(self, image, parent=None):
         super().__init__(parent)
         self.image = image
-        self.filter_type = filter_type
-        self.canny_low = canny_low
-        self.canny_high = canny_high
-        self.sobel_ksize = sobel_ksize
-        self.shearlet_min_contrast = shearlet_min_contrast
         self.edge_linked_image = None
-        self.edges = None
-        self.edge_lists = None
-        self.original_edges = None
         self.initUI()
 
     def initUI(self):
@@ -283,25 +303,12 @@ class EdgeLinkWindow(QDialog):
         self.min_angle_slider = self.create_slider("Minimum Angle", 0, 90, 20)
         layout.addWidget(self.min_angle_slider)
 
-        # Add Clean Edge Length slider
-        self.clean_edge_length_slider = self.create_slider("Clean Edge Min Length", 1, 50, 5)
-        layout.addWidget(self.clean_edge_length_slider)
-
         # Add Apply button
         self.apply_button = QPushButton("Apply Edge Link")
         self.apply_button.clicked.connect(self.apply_edge_link)
         layout.addWidget(self.apply_button)
 
-        # Add Clean Edges button
-        self.clean_edges_button = QPushButton("Clean Short Edges")
-        self.clean_edges_button.clicked.connect(self.clean_short_edges)
-        layout.addWidget(self.clean_edges_button)
-
         self.setLayout(layout)
-
-        # Apply initial edge detection
-        self.apply_edge_detection()
-        self.update_view()
 
     def create_slider(self, name, min_val, max_val, default_val):
         slider_layout = QHBoxLayout()
@@ -315,49 +322,291 @@ class EdgeLinkWindow(QDialog):
         value_label = QLabel(str(default_val))
         slider_layout.addWidget(value_label)
         slider.valueChanged.connect(lambda v: value_label.setText(str(v)))
-        slider.valueChanged.connect(self.reset_view)
-        
+
         widget = QWidget()
         widget.setLayout(slider_layout)
         return widget
 
-    def apply_edge_detection(self):
-        if self.filter_type == 'canny':
-            self.edges = cv2.Canny(self.image, self.canny_low, self.canny_high)
-        elif self.filter_type == 'sobel':
-            grad_x = cv2.Sobel(self.image, cv2.CV_64F, 1, 0, ksize=self.sobel_ksize)
-            grad_y = cv2.Sobel(self.image, cv2.CV_64F, 0, 1, ksize=self.sobel_ksize)
-            self.edges = np.sqrt(grad_x**2 + grad_y**2)
-            self.edges = cv2.normalize(self.edges, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-        elif self.filter_type == 'shearlet':
-            shearlet_system = EdgeSystem(*self.image.shape)
-            self.edges, _ = shearlet_system.detect(self.image, min_contrast=self.shearlet_min_contrast)
-            self.edges = (self.edges * 255).astype(np.uint8)
-        else:
-            QMessageBox.warning(self, "Error", "Invalid filter type")
-            return
-
-        # Convert to binary
-        _, self.edges = cv2.threshold(self.edges, 127, 255, cv2.THRESH_BINARY)
-        self.original_edges = self.edges.copy()  # Store the original edge detection result
-
     def apply_edge_link(self):
-        if self.edges is None:
-            return
-
-        # Get edgelink parameters from sliders
         minilength = self.min_length_slider.findChild(QSlider).value()
         max_gap = self.max_gap_slider.findChild(QSlider).value()
         min_angle = self.min_angle_slider.findChild(QSlider).value()
 
-        edge_linker = edgelink(self.edges, minilength)  # Changed 'min_length' to 'minilength'
+        edge_linker = edgelink(self.image, minilength)
         edge_linker.get_edgelist()
-        self.edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
+        edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
 
         # Post-process edge lists based on max_gap and min_angle
-        processed_edge_lists = self.post_process_edges(self.edge_lists, max_gap, min_angle)
+        processed_edge_lists = self.post_process_edges(edge_lists, max_gap, min_angle)
 
         self.visualize_edge_lists(processed_edge_lists)
+
+    def post_process_edges(self, edge_lists, max_gap, min_angle):
+        # Implement post-processing logic here
+        return edge_lists
+
+    def visualize_edge_lists(self, edge_lists):
+        self.edge_linked_image = np.zeros(self.image.shape, dtype=np.uint8)
+        for edge in edge_lists:
+            for point in edge:
+                if 0 <= point[0] < self.edge_linked_image.shape[0] and 0 <= point[1] < self.edge_linked_image.shape[1]:
+                    self.edge_linked_image[int(point[0]), int(point[1])] = 255
+
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.imshow(self.edge_linked_image, cmap='gray')
+        ax.axis('off')
+        self.canvas.draw()
+
+
+class FilterTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.input_image = None
+        self.filtered_image = None
+        self.edge_linked_image = None
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+
+        image_layout = QHBoxLayout()
+
+        # Input image
+        self.input_figure = Figure(figsize=(5, 5))
+        self.input_canvas = FigureCanvas(self.input_figure)
+
+        # Filtered image
+        self.filtered_figure = Figure(figsize=(5, 5))
+        self.filtered_canvas = FigureCanvas(self.filtered_figure)
+
+        image_layout.addWidget(self.input_canvas)
+        image_layout.addWidget(self.filtered_canvas)
+
+        layout.addLayout(image_layout)
+
+        # Controls layout will be added by subclasses
+        self.controls_layout = QVBoxLayout()
+        layout.addLayout(self.controls_layout)
+
+        # Skeletonization checkbox
+        self.skeletonize_checkbox = QCheckBox("Apply Skeletonization")
+        self.skeletonize_checkbox.stateChanged.connect(self.update_filter)
+        layout.addWidget(self.skeletonize_checkbox)
+
+        # Edge Link button
+        self.edge_link_button = QPushButton("Edge Link")
+        self.edge_link_button.clicked.connect(self.open_edge_link_window)
+        layout.addWidget(self.edge_link_button)
+
+        self.setLayout(layout)
+
+    def set_input_image(self, image):
+        self.input_image = image
+        self.show_input_image()
+        self.update_filter()
+
+    def show_input_image(self):
+        self.input_figure.clear()
+        ax = self.input_figure.add_subplot(111)
+        ax.imshow(self.input_image, cmap='gray')
+        ax.axis('off')
+        self.input_canvas.draw()
+
+    def show_filtered_image(self):
+        self.filtered_figure.clear()
+        ax = self.filtered_figure.add_subplot(111)
+        ax.imshow(self.filtered_image, cmap='gray')
+        ax.axis('off')
+        self.filtered_canvas.draw()
+
+    def update_filter(self):
+        # To be implemented in subclasses
+        pass
+
+    def apply_skeletonization(self, image):
+        return skeletonize(image > 0).astype(np.uint8) * 255
+
+    def open_edge_link_window(self):
+        if self.filtered_image is None:
+            return
+        self.edge_link_window = EdgeLinkWindow(self.filtered_image, self.parent())
+        self.edge_link_window.show()
+
+
+class CannyFilterTab(FilterTab):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setup_controls()
+
+    def setup_controls(self):
+        # Threshold sliders
+        self.threshold1 = QSlider(Qt.Horizontal)
+        self.threshold1.setRange(0, 255)
+        self.threshold1.setValue(50)
+        self.threshold1.valueChanged.connect(self.update_filter)
+
+        self.threshold2 = QSlider(Qt.Horizontal)
+        self.threshold2.setRange(0, 255)
+        self.threshold2.setValue(150)
+        self.threshold2.valueChanged.connect(self.update_filter)
+
+        self.controls_layout.addWidget(QLabel("Threshold 1"))
+        self.controls_layout.addWidget(self.threshold1)
+        self.controls_layout.addWidget(QLabel("Threshold 2"))
+        self.controls_layout.addWidget(self.threshold2)
+
+    def update_filter(self):
+        if self.input_image is not None:
+            self.filtered_image = cv2.Canny(self.input_image,
+                                            self.threshold1.value(),
+                                            self.threshold2.value())
+            if self.skeletonize_checkbox.isChecked():
+                self.filtered_image = self.apply_skeletonization(self.filtered_image)
+            self.show_filtered_image()
+
+
+class SobelFilterTab(FilterTab):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setup_controls()
+
+    def setup_controls(self):
+        # Kernel size slider
+        self.ksize = QSlider(Qt.Horizontal)
+        self.ksize.setRange(1, 31)
+        self.ksize.setValue(3)
+        self.ksize.setSingleStep(2)
+        self.ksize.valueChanged.connect(self.update_filter)
+
+        self.controls_layout.addWidget(QLabel("Kernel Size"))
+        self.controls_layout.addWidget(self.ksize)
+
+    def update_filter(self):
+        if self.input_image is not None:
+            ksize = self.ksize.value()
+            if ksize % 2 == 0:
+                ksize += 1
+            grad_x = cv2.Sobel(self.input_image, cv2.CV_64F, 1, 0, ksize=ksize)
+            grad_y = cv2.Sobel(self.input_image, cv2.CV_64F, 0, 1, ksize=ksize)
+            self.filtered_image = cv2.addWeighted(cv2.convertScaleAbs(grad_x), 0.5,
+                                                  cv2.convertScaleAbs(grad_y), 0.5, 0)
+            if self.skeletonize_checkbox.isChecked():
+                self.filtered_image = self.apply_skeletonization(self.filtered_image)
+            self.show_filtered_image()
+
+
+class ShearletFilterTab(FilterTab):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.shearlet_system = None
+        self.setup_controls()
+
+    def setup_controls(self):
+        # Min contrast slider
+        self.min_contrast = QSlider(Qt.Horizontal)
+        self.min_contrast.setRange(0, 100)
+        self.min_contrast.setValue(10)
+        self.min_contrast.valueChanged.connect(self.update_filter)
+
+        self.controls_layout.addWidget(QLabel("Min Contrast"))
+        self.controls_layout.addWidget(self.min_contrast)
+
+    def set_input_image(self, image):
+        super().set_input_image(image)
+        self.shearlet_system = EdgeSystem(*image.shape)
+
+    def update_filter(self):
+        if self.input_image is not None and self.shearlet_system is not None:
+            edges, _ = self.shearlet_system.detect(self.input_image,
+                                                   min_contrast=self.min_contrast.value())
+            self.filtered_image = (edges * 255).astype(np.uint8)
+            if self.skeletonize_checkbox.isChecked():
+                self.filtered_image = self.apply_skeletonization(self.filtered_image)
+            self.show_filtered_image()
+
+
+class EdgeLinkWindow(QDialog):
+    def __init__(self, image, parent=None):
+        super().__init__(parent)
+        self.image = image
+        self.edge_linked_image = None
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle('Edge Link Visualization')
+        self.setGeometry(100, 100, 800, 800)
+
+        layout = QVBoxLayout()
+
+        self.figure = Figure(figsize=(8, 6))
+        self.canvas = FigureCanvas(self.figure)
+        layout.addWidget(self.canvas)
+
+        # Add sliders for edgelink parameters
+        self.min_length_slider = self.create_slider("Minimum Edge Length", 1, 50, 10)
+        layout.addWidget(self.min_length_slider)
+
+        self.max_gap_slider = self.create_slider("Maximum Gap", 1, 20, 2)
+        layout.addWidget(self.max_gap_slider)
+
+        self.min_angle_slider = self.create_slider("Minimum Angle", 0, 90, 20)
+        layout.addWidget(self.min_angle_slider)
+
+        # Add Apply button
+        self.apply_button = QPushButton("Apply Edge Link")
+        self.apply_button.clicked.connect(self.apply_edge_link)
+        layout.addWidget(self.apply_button)
+
+        self.setLayout(layout)
+
+    def create_slider(self, name, min_val, max_val, default_val):
+        slider_layout = QHBoxLayout()
+        slider_layout.addWidget(QLabel(name))
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(min_val, max_val)
+        slider.setValue(default_val)
+        slider.setTickPosition(QSlider.TicksBelow)
+        slider.setTickInterval((max_val - min_val) // 10)
+        slider_layout.addWidget(slider)
+        value_label = QLabel(str(default_val))
+        slider_layout.addWidget(value_label)
+        slider.valueChanged.connect(lambda v: value_label.setText(str(v)))
+
+        widget = QWidget()
+        widget.setLayout(slider_layout)
+        return widget
+
+    def apply_edge_link(self):
+        minilength = self.min_length_slider.findChild(QSlider).value()
+        max_gap = self.max_gap_slider.findChild(QSlider).value()
+        min_angle = self.min_angle_slider.findChild(QSlider).value()
+
+        edge_linker = edgelink(self.image, minilength)
+        edge_linker.get_edgelist()
+        edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
+
+        # Post-process edge lists based on max_gap and min_angle
+        processed_edge_lists = self.post_process_edges(edge_lists, max_gap, min_angle)
+
+        self.visualize_edge_lists(processed_edge_lists)
+
+    def post_process_edges(self, edge_lists, max_gap, min_angle):
+        # Implement post-processing logic here
+        return edge_lists
+
+    def visualize_edge_lists(self, edge_lists):
+        self.edge_linked_image = np.zeros(self.image.shape, dtype=np.uint8)
+        for edge in edge_lists:
+            for point in edge:
+                if 0 <= point[0] < self.edge_linked_image.shape[0] and 0 <= point[1] < self.edge_linked_image.shape[1]:
+                    self.edge_linked_image[int(point[0]), int(point[1])] = 255
+
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.imshow(self.edge_linked_image, cmap='gray')
+        ax.axis('off')
+        self.canvas.draw()
 
     def clean_short_edges(self):
         if self.edge_lists is None:
@@ -365,7 +614,7 @@ class EdgeLinkWindow(QDialog):
             return
 
         min_length = self.clean_edge_length_slider.findChild(QSlider).value()
-        
+
         # Convert edge lists to the format expected by cleanedgelist
         converted_edge_lists = []
         for edge in self.edge_lists:
@@ -375,10 +624,10 @@ class EdgeLinkWindow(QDialog):
 
         try:
             cleaned_edge_lists = cleanedgelist(converted_edge_lists, min_length)
-            
+
             # Convert cleaned edge lists back to our format
             final_edge_lists = [edge.tolist() for edge in cleaned_edge_lists if edge.shape[0] > 0]
-            
+
             self.visualize_edge_lists(final_edge_lists)
         except Exception as e:
             QMessageBox.warning(self, "Error", f"An error occurred while cleaning edges: {str(e)}")
@@ -414,13 +663,17 @@ class EdgeLinkWindow(QDialog):
         angle = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
         return np.degrees(angle)
     def visualize_edge_lists(self, edge_lists):
-        self.edge_linked_image = np.zeros(self.image.shape[:2], dtype=np.uint8)
+        self.edge_linked_image = np.zeros(self.image.shape, dtype=np.uint8)
         for edge in edge_lists:
             for point in edge:
                 if 0 <= point[0] < self.edge_linked_image.shape[0] and 0 <= point[1] < self.edge_linked_image.shape[1]:
                     self.edge_linked_image[int(point[0]), int(point[1])] = 255
 
-        self.update_view()
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.imshow(self.edge_linked_image, cmap='gray')
+        ax.axis('off')
+        self.canvas.draw()
     def update_view(self):
         if self.edge_linked_image is None:
             return
@@ -638,24 +891,24 @@ class SaveMaskDialog(QDialog):
             self.apply_sobel_filter()
         self.show_filtered_image()
 
-    def apply_canny_filter(self):
-        threshold1 = self.threshold1_slider.value()
-        threshold2 = self.threshold2_slider.value()
-        self.filtered_image = cv2.Canny(self.image, threshold1, threshold2)
-        self.threshold1_label.setText(str(threshold1))
-        self.threshold2_label.setText(str(threshold2))
+    # def apply_canny_filter(self):
+    #     threshold1 = self.threshold1_slider.value()
+    #     threshold2 = self.threshold2_slider.value()
+    #     self.filtered_image = cv2.Canny(self.image, threshold1, threshold2)
+    #     self.threshold1_label.setText(str(threshold1))
+    #     self.threshold2_label.setText(str(threshold2))
 
-    def apply_sobel_filter(self):
-        ksize = self.ksize_slider.value()
-        if ksize % 2 == 0:
-            ksize += 1  # Ensure ksize is odd
-        grad_x = cv2.Sobel(self.image, cv2.CV_64F, 1, 0, ksize=ksize)
-        grad_y = cv2.Sobel(self.image, cv2.CV_64F, 0, 1, ksize=ksize)
-        abs_grad_x = cv2.convertScaleAbs(grad_x)
-        abs_grad_y = cv2.convertScaleAbs(grad_y)
-        self.filtered_image = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
-        _, self.filtered_image = cv2.threshold(self.filtered_image, 0, 255, cv2.THRESH_BINARY_INV)
-        self.ksize_label.setText(str(ksize))
+    # def apply_sobel_filter(self):
+    #     ksize = self.ksize_slider.value()
+    #     if ksize % 2 == 0:
+    #         ksize += 1  # Ensure ksize is odd
+    #     grad_x = cv2.Sobel(self.image, cv2.CV_64F, 1, 0, ksize=ksize)
+    #     grad_y = cv2.Sobel(self.image, cv2.CV_64F, 0, 1, ksize=ksize)
+    #     abs_grad_x = cv2.convertScaleAbs(grad_x)
+    #     abs_grad_y = cv2.convertScaleAbs(grad_y)
+    #     self.filtered_image = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
+    #     _, self.filtered_image = cv2.threshold(self.filtered_image, 0, 255, cv2.THRESH_BINARY_INV)
+    #     self.ksize_label.setText(str(ksize))
 
     def show_filtered_image(self):
         self.figure.clear()
@@ -671,448 +924,448 @@ class SaveMaskDialog(QDialog):
         self.accept()
 
 
-class FullViewWindow(QDialog):
-    def __init__(self, image, title, original_shape, cmap=None, is_manual_interpretation=False, filter_type='canny', shearlet_system=None,
-                 canny_low=50, canny_high=150, sobel_ksize=3, shearlet_min_contrast=10):
-        super().__init__()
-        self.setWindowTitle(title)
-        self.setGeometry(100, 100, 800, 600)
-        
-        self.original_image = image
-        self.display_image = image.copy()
-        self.filtered_image = None
-        self.original_shape = original_shape
-        self.cmap = cmap
-        self.is_manual_interpretation = is_manual_interpretation
-        self.filter_type = filter_type
-        self.shearlet_system = shearlet_system
-
-        self.canny_low = canny_low
-        self.canny_high = canny_high
-        self.sobel_ksize = sobel_ksize
-        self.shearlet_min_contrast = shearlet_min_contrast
-
-        self.lines = []
-        self.filtered_lines = []
-        self.current_line = []
-        self.is_drawing = False
-        self.is_semi_auto = False
-        self.is_edit_mode = False
-        self.semi_auto_start_point = None
-        self.max_path_length = 1000
-
-        self.setup_ui()
-        self.show_original_image()
-        self.update_edge_map()  # Generate initial edge map for semi-auto drawing
-
-    def setup_ui(self):
-        layout = QVBoxLayout()
-
-        self.figure = Figure(figsize=(8, 6))
-        self.canvas = FigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, self)
-
-        layout.addWidget(self.toolbar)
-        layout.addWidget(self.canvas)
-
-        if self.is_manual_interpretation:
-            self.setup_manual_interpretation_ui(layout)
-
-        self.setLayout(layout)
-
-        self.canvas.mpl_connect("button_press_event", self.on_canvas_click)
-        self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
-        self.canvas.mpl_connect("button_release_event", self.on_mouse_release)
-
-    def setup_manual_interpretation_ui(self, layout):
-        self.toggle_drawing_button = QPushButton("Enable Manual Drawing")
-        self.toggle_drawing_button.clicked.connect(self.toggle_drawing)
-        layout.addWidget(self.toggle_drawing_button)
-
-        self.toggle_semi_auto_button = QPushButton("Enable Semi-Auto Drawing")
-        self.toggle_semi_auto_button.clicked.connect(self.toggle_semi_auto)
-        layout.addWidget(self.toggle_semi_auto_button)
-
-        self.apply_filter_button = QPushButton("Apply Filter (Compare)")
-        self.apply_filter_button.clicked.connect(self.apply_filter)
-        layout.addWidget(self.apply_filter_button)
-
-        self.edit_mode_button = QPushButton("Enter Edit Mode")
-        self.edit_mode_button.clicked.connect(self.toggle_edit_mode)
-        layout.addWidget(self.edit_mode_button)
-        
-    def show_original_image(self):
-        self.figure.clear()
-        self.ax = self.figure.add_subplot(111)
-        self.ax.imshow(self.display_image, cmap=self.cmap, aspect='auto')
-        self.ax.axis('off')
-        self.figure.tight_layout(pad=0)
-        self.canvas.draw()
-
-    def update_edge_map(self):
-        self.edge_map = self.get_edge_map()
-    
-    def apply_filter(self):
-        if self.filtered_image is None:
-            self.filtered_image = cv2.addWeighted(self.original_image, 0.7, self.edge_map, 0.3, 0)
-        self.filtered_lines = self.convert_edges_to_lines(self.edge_map)
-        self.show_filtered_image()
-        self.draw_lines(include_filtered=True)
-    
-    def show_filtered_image(self):
-        self.figure.clear()
-        self.ax = self.figure.add_subplot(111)
-        self.ax.imshow(self.filtered_image, cmap=self.cmap, aspect='auto')
-        self.ax.axis('off')
-        self.figure.tight_layout(pad=0)
-        self.canvas.draw()
-
-    def show_image(self):
-        self.figure.clear()
-        self.ax = self.figure.add_subplot(111)
-        self.ax.imshow(self.display_image, cmap=self.cmap, aspect='auto')
-        self.ax.axis('off')
-        self.figure.tight_layout(pad=0)
-        self.canvas.draw()
-
-    def convert_edges_to_lines(self, edges):
-        contours = measure.find_contours(edges, 0.5)
-        lines = []
-        for contour in contours:
-            simplified = measure.approximate_polygon(contour, tolerance=2)
-            if len(simplified) > 1:
-                lines.append([(int(x), int(y)) for y, x in simplified])
-        return lines
-    
-    def on_canvas_click(self, event):
-        if not self.is_manual_interpretation or event.inaxes != self.ax:
-            return
-
-        x, y = int(event.xdata), int(event.ydata)
-        
-        if self.is_drawing:
-            if event.button == 1:  # Left click
-                if not self.current_line:
-                    self.current_line = [(x, y)]
-                else:
-                    self.current_line.append((x, y))
-                    self.draw_lines()
-            elif event.button == 3:  # Right click
-                if self.current_line:
-                    self.lines.append(self.current_line)
-                    self.current_line = []
-                    self.draw_lines()
-        elif self.is_semi_auto:
-            if not self.semi_auto_start_point:
-                self.semi_auto_start_point = (x, y)
-                QMessageBox.information(self, "Semi-Auto Drawing", "Start point set. Click again to set end point.")
-            else:
-                end_point = (x, y)
-                tracked_line = self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
-                self.lines.append(tracked_line)
-                self.semi_auto_start_point = None
-                self.draw_lines()
-                QMessageBox.information(self, "Semi-Auto Drawing", "Line drawn. You can start a new line.")
-        elif self.is_edit_mode:
-            self.edit_nearest_point(x, y)
-
-    def on_mouse_move(self, event):
-        if not self.is_manual_interpretation or not self.is_drawing or not self.current_line or event.inaxes != self.ax:
-            return
-
-        x, y = int(event.xdata), int(event.ydata)
-        temp_line = self.current_line + [(x, y)]
-        self.draw_lines(temp_line)
-
-    def toggle_drawing(self):
-        self.is_drawing = not self.is_drawing
-        self.is_semi_auto = False
-        self.is_edit_mode = False
-        self.semi_auto_start_point = None
-        self.toggle_drawing_button.setText("Disable Manual Drawing" if self.is_drawing else "Enable Manual Drawing")
-        self.toggle_semi_auto_button.setText("Enable Semi-Auto Drawing")
-        self.edit_mode_button.setText("Enter Edit Mode")
-
-    def start_autotrack(self):
-        if not self.start_point or not self.end_point:
-            QMessageBox.warning(self, "Error", "Start or end point not set")
-            return
-
-        blurred_image = gaussian_filter(self.image, sigma=6)
-
-        if self.filter_type == 'canny':
-            edges = feature.canny(blurred_image, sigma=2)
-        elif self.filter_type == 'sobel':
-            sobel_x = sobel(blurred_image, axis=0)
-            sobel_y = sobel(blurred_image, axis=1)
-            grad_magnitude = np.hypot(sobel_x, sobel_y)
-            large_edges = grad_magnitude > np.percentile(grad_magnitude, 90)
-            edges = np.where(large_edges, grad_magnitude, 0)
-        elif self.filter_type == 'shearlet':
-            shearlet_system = EdgeSystem(*self.image.shape)
-            edges, _ = shearlet_system.detect(blurred_image, min_contrast=10)
-            edges = mask(edges, thin_mask(edges))
-
-        costs = np.where(edges, 1 / (edges + 1e-6), 1)
-        costs /= np.max(costs)
-
-        # Convert points from display coordinates to original image coordinates
-        start_point_original = (self.start_point[0] * self.original_shape[0] // self.image.shape[0],
-                                self.start_point[1] * self.original_shape[1] // self.image.shape[1])
-        end_point_original = (self.end_point[0] * self.original_shape[0] // self.image.shape[0],
-                              self.end_point[1] * self.original_shape[1] // self.image.shape[1])
-
-        #print(f"Start point in original image coordinates: {start_point_original}")
-        #print(f"End point in original image coordinates: {end_point_original}")
-
-        # Execute pathfinding using A* algorithm
-        path = a_star(costs, start_point_original, end_point_original)
-        self.draw_path(path, start_point_original, end_point_original)
-
-    def draw_path(self, path, start_point_original, end_point_original):
-        ax = self.canvas.figure.gca()
-        # Convert path coordinates back to display coordinates
-        path = [(y * self.image.shape[0] // self.original_shape[0], x * self.image.shape[1] // self.original_shape[1]) for y, x in path]
-        path_x, path_y = zip(*[(x, y) for x, y in path])
-        ax.plot(path_y, path_x, 'k-', linewidth=2)
-        ax.scatter(start_point_original[1] * self.image.shape[1] // self.original_shape[1], 
-                   start_point_original[0] * self.image.shape[0] // self.original_shape[0], 
-                   color='green', s=100)
-        ax.scatter(end_point_original[1] * self.image.shape[1] // self.original_shape[1], 
-                   end_point_original[0] * self.image.shape[0] // self.original_shape[0], 
-                   color='blue', s=100)
-        self.canvas.draw()
-        #print(f"Path coordinates in display coordinates: {list(zip(path_x, path_y))}")
-        self.start_point = None
-        self.end_point = None
-
-    def on_mouse_release(self, event):
-        if self.is_manual_interpretation and self.is_drawing and event.button == 1 and self.current_line:  # Left click release
-            x, y = int(event.xdata), int(event.ydata)
-            self.current_line.append((x, y))
-            self.draw_lines()
-
-    def draw_lines(self, temp_line=None, include_filtered=False):
-        self.show_original_image()  # Always draw on the original image
-        for line in self.lines:
-            if line and len(line) > 1:
-                x, y = zip(*line)
-                self.ax.plot(x, y, 'r-')
-        if include_filtered:
-            for line in self.filtered_lines:
-                if line and len(line) > 1:
-                    x, y = zip(*line)
-                    self.ax.plot(x, y, 'b-')  # Draw filtered lines in blue
-        if self.current_line and len(self.current_line) > 1:
-            x, y = zip(*self.current_line)
-            self.ax.plot(x, y, 'r-')
-        if temp_line and len(temp_line) > 1:
-            x, y = zip(*temp_line)
-            self.ax.plot(x, y, 'r--')
-        self.canvas.draw()
-
-    def semi_automatic_tracking(self, start_point, end_point):
-        # Convert points to image coordinates
-        start = (int(start_point[1]), int(start_point[0]))
-        end = (int(end_point[1]), int(end_point[0]))
-
-        # Create a cost map from the edge map
-        cost_map = 1 - self.edge_map / 255.0  # Invert so edges have low cost
-
-        # Use A* algorithm to find the path
-        path = self.a_star(cost_map, start, end)
-
-        if path:
-            # Convert path back to display coordinates
-            tracked_line = [(x, y) for y, x in path]
-            return tracked_line
-        else:
-            QMessageBox.warning(self, "Path Not Found", "Could not find a path between the selected points. Try selecting closer points or adjusting the filter settings.")
-            return None
-
-    def get_edge_map(self):
-        if self.filter_type == 'canny':
-            return cv2.Canny(self.original_image, self.canny_low, self.canny_high)
-        elif self.filter_type == 'sobel':
-            grad_x = cv2.Sobel(self.original_image, cv2.CV_64F, 1, 0, ksize=self.sobel_ksize)
-            grad_y = cv2.Sobel(self.original_image, cv2.CV_64F, 0, 1, ksize=self.sobel_ksize)
-            edges = np.sqrt(grad_x**2 + grad_y**2)
-            return cv2.normalize(edges, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-        elif self.filter_type == 'shearlet':
-            if self.shearlet_system is not None:
-                edges, _ = self.shearlet_system.detect(self.original_image, min_contrast=self.shearlet_min_contrast)
-                edges = mask(edges, thin_mask(edges))
-                return (edges * 255).astype(np.uint8)
-            else:
-                return np.zeros_like(self.original_image)
-        else:
-            return np.zeros_like(self.original_image)
-        
-    def a_star(self, cost_map, start, goal):
-        def heuristic(a, b):
-            return np.hypot(b[0] - a[0], b[1] - a[1])
-
-        neighbors = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
-
-        close_set = set()
-        came_from = {}
-        gscore = {start: 0}
-        fscore = {start: heuristic(start, goal)}
-        oheap = []
-
-        heapq.heappush(oheap, (fscore[start], start))
-        
-        while oheap:
-            current = heapq.heappop(oheap)[1]
-
-            if current == goal:
-                path = []
-                while current in came_from:
-                    path.append(current)
-                    current = came_from[current]
-                path.append(start)
-                path.reverse()
-                return path
-
-            close_set.add(current)
-
-            if len(close_set) > self.max_path_length:
-                return None  # Path is too long, abort search
-
-            for i, j in neighbors:
-                neighbor = current[0] + i, current[1] + j
-                if 0 <= neighbor[0] < cost_map.shape[0] and 0 <= neighbor[1] < cost_map.shape[1]:
-                    if neighbor in close_set:
-                        continue
-                    tentative_g_score = gscore[current] + cost_map[neighbor[0]][neighbor[1]]
-                    if tentative_g_score < gscore.get(neighbor, np.inf):
-                        came_from[neighbor] = current
-                        gscore[neighbor] = tentative_g_score
-                        fscore[neighbor] = gscore[neighbor] + heuristic(neighbor, goal)
-                        heapq.heappush(oheap, (fscore[neighbor], neighbor))
-        
-        return None
-
-    def keyPressEvent(self, event):
-        if self.is_manual_interpretation and event.key() == Qt.Key_E:  # 'E' for edit mode
-            self.toggle_edit_mode()
-        else:
-            super().keyPressEvent(event)
-            
-    def toggle_edit_mode(self):
-        if not self.is_manual_interpretation:
-            return
-
-        self.is_edit_mode = not self.is_edit_mode
-        self.is_drawing = False
-        self.is_semi_auto = False
-        if self.is_edit_mode:
-            self.toggle_drawing_button.setEnabled(False)
-            self.toggle_semi_auto_button.setEnabled(False)
-            self.edit_mode_button.setText("Exit Edit Mode")
-            QMessageBox.information(self, "Edit Mode", "Click near a line point to edit. Click 'Exit Edit Mode' when done.")
-        else:
-            self.toggle_drawing_button.setEnabled(True)
-            self.toggle_semi_auto_button.setEnabled(True)
-            self.edit_mode_button.setText("Enter Edit Mode")
-
-    def toggle_semi_auto(self):
-        self.is_semi_auto = not self.is_semi_auto
-        self.is_drawing = False
-        self.is_edit_mode = False
-        self.semi_auto_start_point = None
-        self.toggle_semi_auto_button.setText("Disable Semi-Auto Drawing" if self.is_semi_auto else "Enable Semi-Auto Drawing")
-        self.toggle_drawing_button.setText("Enable Manual Drawing")
-        self.edit_mode_button.setText("Enter Edit Mode")
-
-    def edit_nearest_point(self, x, y):
-        min_distance = float('inf')
-        nearest_line = None
-        nearest_point_index = None
-        is_filtered_line = False
-
-        # Check manually drawn lines
-        for i, line in enumerate(self.lines):
-            for j, point in enumerate(line):
-                distance = np.sqrt((x - point[0])**2 + (y - point[1])**2)
-                if distance < min_distance:
-                    min_distance = distance
-                    nearest_line = i
-                    nearest_point_index = j
-                    is_filtered_line = False
-
-        # Check filtered lines
-        for i, line in enumerate(self.filtered_lines):
-            for j, point in enumerate(line):
-                distance = np.sqrt((x - point[0])**2 + (y - point[1])**2)
-                if distance < min_distance:
-                    min_distance = distance
-                    nearest_line = i
-                    nearest_point_index = j
-                    is_filtered_line = True
-
-        if nearest_line is not None and min_distance < 10:  # Threshold for selection
-            if is_filtered_line:
-                self.filtered_lines[nearest_line][nearest_point_index] = (x, y)
-            else:
-                self.lines[nearest_line][nearest_point_index] = (x, y)
-            self.draw_lines()
-
-    def on_edit_click(self, event):
-        if event.inaxes != self.ax:
-            return
-
-        x, y = event.xdata, event.ydata
-        min_distance = float('inf')
-        selected_line = None
-        selected_point_index = None
-
-        for i, line in enumerate(self.lines):
-            for j, point in enumerate(line):
-                distance = np.sqrt((x - point[0])**2 + (y - point[1])**2)
-                if distance < min_distance:
-                    min_distance = distance
-                    selected_line = i
-                    selected_point_index = j
-
-        if selected_line is not None and min_distance < 10:  # Threshold for selection
-            self.edit_line(selected_line, selected_point_index, (x, y))
-
-    def edit_line(self, line_index, point_index, new_position):
-        self.lines[line_index][point_index] = new_position
-        self.draw_lines()
-
-    def update_thresholds(self, canny_low=None, canny_high=None, sobel_ksize=None, shearlet_min_contrast=None):
-        if canny_low is not None:
-            self.canny_low = canny_low
-        if canny_high is not None:
-            self.canny_high = canny_high
-        if sobel_ksize is not None:
-            self.sobel_ksize = sobel_ksize
-        if shearlet_min_contrast is not None:
-            self.shearlet_min_contrast = shearlet_min_contrast
-        self.update_edge_map()  # Update edge map when thresholds change
-
-    def handle_semi_auto(self, x, y):
-        if not self.semi_auto_start_point:
-            self.semi_auto_start_point = (x, y)
-            QMessageBox.information(self, "Semi-Auto Drawing", "Start point set. Click again to set end point.")
-        else:
-            end_point = (x, y)
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            try:
-                tracked_line = self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
-                if tracked_line and len(tracked_line) > 1:
-                    self.lines.append(tracked_line)
-                    self.draw_lines()
-                    QMessageBox.information(self, "Semi-Auto Drawing", "Line drawn. You can start a new line.")
-                else:
-                    QMessageBox.warning(self, "Semi-Auto Drawing", "Unable to find a path. Try different points or adjust the filter.")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"An error occurred during semi-automatic tracking: {str(e)}")
-            finally:
-                QApplication.restoreOverrideCursor()
-            self.semi_auto_start_point = None
+# class FullViewWindow(QDialog):
+#     def __init__(self, image, title, original_shape, cmap=None, is_manual_interpretation=False, filter_type='canny', shearlet_system=None,
+#                  canny_low=50, canny_high=150, sobel_ksize=3, shearlet_min_contrast=10):
+#         super().__init__()
+#         self.setWindowTitle(title)
+#         self.setGeometry(100, 100, 800, 600)
+#
+#         self.original_image = image
+#         self.display_image = image.copy()
+#         self.filtered_image = None
+#         self.original_shape = original_shape
+#         self.cmap = cmap
+#         self.is_manual_interpretation = is_manual_interpretation
+#         self.filter_type = filter_type
+#         self.shearlet_system = shearlet_system
+#
+#         self.canny_low = canny_low
+#         self.canny_high = canny_high
+#         self.sobel_ksize = sobel_ksize
+#         self.shearlet_min_contrast = shearlet_min_contrast
+#
+#         self.lines = []
+#         self.filtered_lines = []
+#         self.current_line = []
+#         self.is_drawing = False
+#         self.is_semi_auto = False
+#         self.is_edit_mode = False
+#         self.semi_auto_start_point = None
+#         self.max_path_length = 1000
+#
+#         self.setup_ui()
+#         self.show_original_image()
+#         self.update_edge_map()  # Generate initial edge map for semi-auto drawing
+#
+#     def setup_ui(self):
+#         layout = QVBoxLayout()
+#
+#         self.figure = Figure(figsize=(8, 6))
+#         self.canvas = FigureCanvas(self.figure)
+#         self.toolbar = NavigationToolbar(self.canvas, self)
+#
+#         layout.addWidget(self.toolbar)
+#         layout.addWidget(self.canvas)
+#
+#         if self.is_manual_interpretation:
+#             self.setup_manual_interpretation_ui(layout)
+#
+#         self.setLayout(layout)
+#
+#         self.canvas.mpl_connect("button_press_event", self.on_canvas_click)
+#         self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
+#         self.canvas.mpl_connect("button_release_event", self.on_mouse_release)
+#
+#     def setup_manual_interpretation_ui(self, layout):
+#         self.toggle_drawing_button = QPushButton("Enable Manual Drawing")
+#         self.toggle_drawing_button.clicked.connect(self.toggle_drawing)
+#         layout.addWidget(self.toggle_drawing_button)
+#
+#         self.toggle_semi_auto_button = QPushButton("Enable Semi-Auto Drawing")
+#         self.toggle_semi_auto_button.clicked.connect(self.toggle_semi_auto)
+#         layout.addWidget(self.toggle_semi_auto_button)
+#
+#         self.apply_filter_button = QPushButton("Apply Filter (Compare)")
+#         self.apply_filter_button.clicked.connect(self.apply_filter)
+#         layout.addWidget(self.apply_filter_button)
+#
+#         self.edit_mode_button = QPushButton("Enter Edit Mode")
+#         self.edit_mode_button.clicked.connect(self.toggle_edit_mode)
+#         layout.addWidget(self.edit_mode_button)
+#
+#     # def show_original_image(self):
+#     #     self.figure.clear()
+#     #     self.ax = self.figure.add_subplot(111)
+#     #     self.ax.imshow(self.display_image, cmap=self.cmap, aspect='auto')
+#     #     self.ax.axis('off')
+#     #     self.figure.tight_layout(pad=0)
+#     #     self.canvas.draw()
+#
+#     def update_edge_map(self):
+#         self.edge_map = self.get_edge_map()
+#
+#     def apply_filter(self):
+#         if self.filtered_image is None:
+#             self.filtered_image = cv2.addWeighted(self.original_image, 0.7, self.edge_map, 0.3, 0)
+#         self.filtered_lines = self.convert_edges_to_lines(self.edge_map)
+#         self.show_filtered_image()
+#         self.draw_lines(include_filtered=True)
+#
+#     def show_filtered_image(self):
+#         self.figure.clear()
+#         self.ax = self.figure.add_subplot(111)
+#         self.ax.imshow(self.filtered_image, cmap=self.cmap, aspect='auto')
+#         self.ax.axis('off')
+#         self.figure.tight_layout(pad=0)
+#         self.canvas.draw()
+#
+#     def show_image(self):
+#         self.figure.clear()
+#         self.ax = self.figure.add_subplot(111)
+#         self.ax.imshow(self.display_image, cmap=self.cmap, aspect='auto')
+#         self.ax.axis('off')
+#         self.figure.tight_layout(pad=0)
+#         self.canvas.draw()
+#
+#     def convert_edges_to_lines(self, edges):
+#         contours = measure.find_contours(edges, 0.5)
+#         lines = []
+#         for contour in contours:
+#             simplified = measure.approximate_polygon(contour, tolerance=2)
+#             if len(simplified) > 1:
+#                 lines.append([(int(x), int(y)) for y, x in simplified])
+#         return lines
+#
+#     def on_canvas_click(self, event):
+#         if not self.is_manual_interpretation or event.inaxes != self.ax:
+#             return
+#
+#         x, y = int(event.xdata), int(event.ydata)
+#
+#         if self.is_drawing:
+#             if event.button == 1:  # Left click
+#                 if not self.current_line:
+#                     self.current_line = [(x, y)]
+#                 else:
+#                     self.current_line.append((x, y))
+#                     self.draw_lines()
+#             elif event.button == 3:  # Right click
+#                 if self.current_line:
+#                     self.lines.append(self.current_line)
+#                     self.current_line = []
+#                     self.draw_lines()
+#         elif self.is_semi_auto:
+#             if not self.semi_auto_start_point:
+#                 self.semi_auto_start_point = (x, y)
+#                 QMessageBox.information(self, "Semi-Auto Drawing", "Start point set. Click again to set end point.")
+#             else:
+#                 end_point = (x, y)
+#                 tracked_line = self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
+#                 self.lines.append(tracked_line)
+#                 self.semi_auto_start_point = None
+#                 self.draw_lines()
+#                 QMessageBox.information(self, "Semi-Auto Drawing", "Line drawn. You can start a new line.")
+#         elif self.is_edit_mode:
+#             self.edit_nearest_point(x, y)
+#
+#     def on_mouse_move(self, event):
+#         if not self.is_manual_interpretation or not self.is_drawing or not self.current_line or event.inaxes != self.ax:
+#             return
+#
+#         x, y = int(event.xdata), int(event.ydata)
+#         temp_line = self.current_line + [(x, y)]
+#         self.draw_lines(temp_line)
+#
+#     def toggle_drawing(self):
+#         self.is_drawing = not self.is_drawing
+#         self.is_semi_auto = False
+#         self.is_edit_mode = False
+#         self.semi_auto_start_point = None
+#         self.toggle_drawing_button.setText("Disable Manual Drawing" if self.is_drawing else "Enable Manual Drawing")
+#         self.toggle_semi_auto_button.setText("Enable Semi-Auto Drawing")
+#         self.edit_mode_button.setText("Enter Edit Mode")
+#
+#     def start_autotrack(self):
+#         if not self.start_point or not self.end_point:
+#             QMessageBox.warning(self, "Error", "Start or end point not set")
+#             return
+#
+#         blurred_image = gaussian_filter(self.image, sigma=6)
+#
+#         if self.filter_type == 'canny':
+#             edges = feature.canny(blurred_image, sigma=2)
+#         elif self.filter_type == 'sobel':
+#             sobel_x = sobel(blurred_image, axis=0)
+#             sobel_y = sobel(blurred_image, axis=1)
+#             grad_magnitude = np.hypot(sobel_x, sobel_y)
+#             large_edges = grad_magnitude > np.percentile(grad_magnitude, 90)
+#             edges = np.where(large_edges, grad_magnitude, 0)
+#         elif self.filter_type == 'shearlet':
+#             shearlet_system = EdgeSystem(*self.image.shape)
+#             edges, _ = shearlet_system.detect(blurred_image, min_contrast=10)
+#             edges = mask(edges, thin_mask(edges))
+#
+#         costs = np.where(edges, 1 / (edges + 1e-6), 1)
+#         costs /= np.max(costs)
+#
+#         # Convert points from display coordinates to original image coordinates
+#         start_point_original = (self.start_point[0] * self.original_shape[0] // self.image.shape[0],
+#                                 self.start_point[1] * self.original_shape[1] // self.image.shape[1])
+#         end_point_original = (self.end_point[0] * self.original_shape[0] // self.image.shape[0],
+#                               self.end_point[1] * self.original_shape[1] // self.image.shape[1])
+#
+#         #print(f"Start point in original image coordinates: {start_point_original}")
+#         #print(f"End point in original image coordinates: {end_point_original}")
+#
+#         # Execute pathfinding using A* algorithm
+#         path = a_star(costs, start_point_original, end_point_original)
+#         self.draw_path(path, start_point_original, end_point_original)
+#
+#     def draw_path(self, path, start_point_original, end_point_original):
+#         ax = self.canvas.figure.gca()
+#         # Convert path coordinates back to display coordinates
+#         path = [(y * self.image.shape[0] // self.original_shape[0], x * self.image.shape[1] // self.original_shape[1]) for y, x in path]
+#         path_x, path_y = zip(*[(x, y) for x, y in path])
+#         ax.plot(path_y, path_x, 'k-', linewidth=2)
+#         ax.scatter(start_point_original[1] * self.image.shape[1] // self.original_shape[1],
+#                    start_point_original[0] * self.image.shape[0] // self.original_shape[0],
+#                    color='green', s=100)
+#         ax.scatter(end_point_original[1] * self.image.shape[1] // self.original_shape[1],
+#                    end_point_original[0] * self.image.shape[0] // self.original_shape[0],
+#                    color='blue', s=100)
+#         self.canvas.draw()
+#         #print(f"Path coordinates in display coordinates: {list(zip(path_x, path_y))}")
+#         self.start_point = None
+#         self.end_point = None
+#
+#     def on_mouse_release(self, event):
+#         if self.is_manual_interpretation and self.is_drawing and event.button == 1 and self.current_line:  # Left click release
+#             x, y = int(event.xdata), int(event.ydata)
+#             self.current_line.append((x, y))
+#             self.draw_lines()
+#
+#     def draw_lines(self, temp_line=None, include_filtered=False):
+#         self.show_original_image()  # Always draw on the original image
+#         for line in self.lines:
+#             if line and len(line) > 1:
+#                 x, y = zip(*line)
+#                 self.ax.plot(x, y, 'r-')
+#         if include_filtered:
+#             for line in self.filtered_lines:
+#                 if line and len(line) > 1:
+#                     x, y = zip(*line)
+#                     self.ax.plot(x, y, 'b-')  # Draw filtered lines in blue
+#         if self.current_line and len(self.current_line) > 1:
+#             x, y = zip(*self.current_line)
+#             self.ax.plot(x, y, 'r-')
+#         if temp_line and len(temp_line) > 1:
+#             x, y = zip(*temp_line)
+#             self.ax.plot(x, y, 'r--')
+#         self.canvas.draw()
+#
+#     def semi_automatic_tracking(self, start_point, end_point):
+#         # Convert points to image coordinates
+#         start = (int(start_point[1]), int(start_point[0]))
+#         end = (int(end_point[1]), int(end_point[0]))
+#
+#         # Create a cost map from the edge map
+#         cost_map = 1 - self.edge_map / 255.0  # Invert so edges have low cost
+#
+#         # Use A* algorithm to find the path
+#         path = self.a_star(cost_map, start, end)
+#
+#         if path:
+#             # Convert path back to display coordinates
+#             tracked_line = [(x, y) for y, x in path]
+#             return tracked_line
+#         else:
+#             QMessageBox.warning(self, "Path Not Found", "Could not find a path between the selected points. Try selecting closer points or adjusting the filter settings.")
+#             return None
+#
+#     def get_edge_map(self):
+#         if self.filter_type == 'canny':
+#             return cv2.Canny(self.original_image, self.canny_low, self.canny_high)
+#         elif self.filter_type == 'sobel':
+#             grad_x = cv2.Sobel(self.original_image, cv2.CV_64F, 1, 0, ksize=self.sobel_ksize)
+#             grad_y = cv2.Sobel(self.original_image, cv2.CV_64F, 0, 1, ksize=self.sobel_ksize)
+#             edges = np.sqrt(grad_x**2 + grad_y**2)
+#             return cv2.normalize(edges, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+#         elif self.filter_type == 'shearlet':
+#             if self.shearlet_system is not None:
+#                 edges, _ = self.shearlet_system.detect(self.original_image, min_contrast=self.shearlet_min_contrast)
+#                 edges = mask(edges, thin_mask(edges))
+#                 return (edges * 255).astype(np.uint8)
+#             else:
+#                 return np.zeros_like(self.original_image)
+#         else:
+#             return np.zeros_like(self.original_image)
+#
+#     def a_star(self, cost_map, start, goal):
+#         def heuristic(a, b):
+#             return np.hypot(b[0] - a[0], b[1] - a[1])
+#
+#         neighbors = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
+#
+#         close_set = set()
+#         came_from = {}
+#         gscore = {start: 0}
+#         fscore = {start: heuristic(start, goal)}
+#         oheap = []
+#
+#         heapq.heappush(oheap, (fscore[start], start))
+#
+#         while oheap:
+#             current = heapq.heappop(oheap)[1]
+#
+#             if current == goal:
+#                 path = []
+#                 while current in came_from:
+#                     path.append(current)
+#                     current = came_from[current]
+#                 path.append(start)
+#                 path.reverse()
+#                 return path
+#
+#             close_set.add(current)
+#
+#             if len(close_set) > self.max_path_length:
+#                 return None  # Path is too long, abort search
+#
+#             for i, j in neighbors:
+#                 neighbor = current[0] + i, current[1] + j
+#                 if 0 <= neighbor[0] < cost_map.shape[0] and 0 <= neighbor[1] < cost_map.shape[1]:
+#                     if neighbor in close_set:
+#                         continue
+#                     tentative_g_score = gscore[current] + cost_map[neighbor[0]][neighbor[1]]
+#                     if tentative_g_score < gscore.get(neighbor, np.inf):
+#                         came_from[neighbor] = current
+#                         gscore[neighbor] = tentative_g_score
+#                         fscore[neighbor] = gscore[neighbor] + heuristic(neighbor, goal)
+#                         heapq.heappush(oheap, (fscore[neighbor], neighbor))
+#
+#         return None
+#
+#     def keyPressEvent(self, event):
+#         if self.is_manual_interpretation and event.key() == Qt.Key_E:  # 'E' for edit mode
+#             self.toggle_edit_mode()
+#         else:
+#             super().keyPressEvent(event)
+#
+#     def toggle_edit_mode(self):
+#         if not self.is_manual_interpretation:
+#             return
+#
+#         self.is_edit_mode = not self.is_edit_mode
+#         self.is_drawing = False
+#         self.is_semi_auto = False
+#         if self.is_edit_mode:
+#             self.toggle_drawing_button.setEnabled(False)
+#             self.toggle_semi_auto_button.setEnabled(False)
+#             self.edit_mode_button.setText("Exit Edit Mode")
+#             QMessageBox.information(self, "Edit Mode", "Click near a line point to edit. Click 'Exit Edit Mode' when done.")
+#         else:
+#             self.toggle_drawing_button.setEnabled(True)
+#             self.toggle_semi_auto_button.setEnabled(True)
+#             self.edit_mode_button.setText("Enter Edit Mode")
+#
+#     def toggle_semi_auto(self):
+#         self.is_semi_auto = not self.is_semi_auto
+#         self.is_drawing = False
+#         self.is_edit_mode = False
+#         self.semi_auto_start_point = None
+#         self.toggle_semi_auto_button.setText("Disable Semi-Auto Drawing" if self.is_semi_auto else "Enable Semi-Auto Drawing")
+#         self.toggle_drawing_button.setText("Enable Manual Drawing")
+#         self.edit_mode_button.setText("Enter Edit Mode")
+#
+#     def edit_nearest_point(self, x, y):
+#         min_distance = float('inf')
+#         nearest_line = None
+#         nearest_point_index = None
+#         is_filtered_line = False
+#
+#         # Check manually drawn lines
+#         for i, line in enumerate(self.lines):
+#             for j, point in enumerate(line):
+#                 distance = np.sqrt((x - point[0])**2 + (y - point[1])**2)
+#                 if distance < min_distance:
+#                     min_distance = distance
+#                     nearest_line = i
+#                     nearest_point_index = j
+#                     is_filtered_line = False
+#
+#         # Check filtered lines
+#         for i, line in enumerate(self.filtered_lines):
+#             for j, point in enumerate(line):
+#                 distance = np.sqrt((x - point[0])**2 + (y - point[1])**2)
+#                 if distance < min_distance:
+#                     min_distance = distance
+#                     nearest_line = i
+#                     nearest_point_index = j
+#                     is_filtered_line = True
+#
+#         if nearest_line is not None and min_distance < 10:  # Threshold for selection
+#             if is_filtered_line:
+#                 self.filtered_lines[nearest_line][nearest_point_index] = (x, y)
+#             else:
+#                 self.lines[nearest_line][nearest_point_index] = (x, y)
+#             self.draw_lines()
+#
+#     def on_edit_click(self, event):
+#         if event.inaxes != self.ax:
+#             return
+#
+#         x, y = event.xdata, event.ydata
+#         min_distance = float('inf')
+#         selected_line = None
+#         selected_point_index = None
+#
+#         for i, line in enumerate(self.lines):
+#             for j, point in enumerate(line):
+#                 distance = np.sqrt((x - point[0])**2 + (y - point[1])**2)
+#                 if distance < min_distance:
+#                     min_distance = distance
+#                     selected_line = i
+#                     selected_point_index = j
+#
+#         if selected_line is not None and min_distance < 10:  # Threshold for selection
+#             self.edit_line(selected_line, selected_point_index, (x, y))
+#
+#     def edit_line(self, line_index, point_index, new_position):
+#         self.lines[line_index][point_index] = new_position
+#         self.draw_lines()
+#
+#     def update_thresholds(self, canny_low=None, canny_high=None, sobel_ksize=None, shearlet_min_contrast=None):
+#         if canny_low is not None:
+#             self.canny_low = canny_low
+#         if canny_high is not None:
+#             self.canny_high = canny_high
+#         if sobel_ksize is not None:
+#             self.sobel_ksize = sobel_ksize
+#         if shearlet_min_contrast is not None:
+#             self.shearlet_min_contrast = shearlet_min_contrast
+#         self.update_edge_map()  # Update edge map when thresholds change
+#
+#     def handle_semi_auto(self, x, y):
+#         if not self.semi_auto_start_point:
+#             self.semi_auto_start_point = (x, y)
+#             QMessageBox.information(self, "Semi-Auto Drawing", "Start point set. Click again to set end point.")
+#         else:
+#             end_point = (x, y)
+#             QApplication.setOverrideCursor(Qt.WaitCursor)
+#             try:
+#                 tracked_line = self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
+#                 if tracked_line and len(tracked_line) > 1:
+#                     self.lines.append(tracked_line)
+#                     self.draw_lines()
+#                     QMessageBox.information(self, "Semi-Auto Drawing", "Line drawn. You can start a new line.")
+#                 else:
+#                     QMessageBox.warning(self, "Semi-Auto Drawing", "Unable to find a path. Try different points or adjust the filter.")
+#             except Exception as e:
+#                 QMessageBox.critical(self, "Error", f"An error occurred during semi-automatic tracking: {str(e)}")
+#             finally:
+#                 QApplication.restoreOverrideCursor()
+#             self.semi_auto_start_point = None
 
 class ExportDialog(QDialog):
     def __init__(self, parent=None, export_type=""):
@@ -1301,6 +1554,7 @@ class ColorHistogramDialog(QDialog):
         ax.set_ylabel('Frequency')
         self.canvas.draw()
 
+
 class MyWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1310,6 +1564,9 @@ class MyWindow(QMainWindow):
         self.shearlet_system = None
         self.setGeometry(100, 100, 1200, 800)
         self.initUI()
+        self.shearletMinContrast = QSlider(Qt.Horizontal)
+        self.shearletMinContrast.setRange(0, 100)
+        self.shearletMinContrast.setValue(10)
 
     def initUI(self):
         self.setWindowTitle('DOMStudioImage')
@@ -1320,12 +1577,10 @@ class MyWindow(QMainWindow):
 
         # Create tab widget
         self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)
-        self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        self.tab_widget.setMovable(True)  # Allow tabs to be moved
         main_layout.addWidget(self.tab_widget)
 
-        # Add initial tabs
-        self.add_filter_tab("Original")
+        # Add filter tabs
         self.add_filter_tab("Canny")
         self.add_filter_tab("Sobel")
         self.add_filter_tab("Shearlet")
@@ -1334,171 +1589,36 @@ class MyWindow(QMainWindow):
         self.tab_widget.addTab(QWidget(), "+")
         self.tab_widget.tabBarClicked.connect(self.handle_tab_click)
 
-        # Image Selection
-        image_selection_layout = QHBoxLayout()
+        # Load image button
         self.load_button = QPushButton("Load Image")
         self.load_button.clicked.connect(self.load_image)
-        image_selection_layout.addWidget(self.load_button)
-        self.save_button = QPushButton("Save Mask")
-        self.save_button.setEnabled(False)
-        self.save_button.clicked.connect(self.save_mask)
-        image_selection_layout.addWidget(self.save_button)
-        main_layout.addLayout(image_selection_layout)
+        main_layout.addWidget(self.load_button)
+
+        # Clean Short Edges button
+        self.clean_edges_button = QPushButton("Clean Short Edges")
+        self.clean_edges_button.clicked.connect(self.clean_short_edges)
+        main_layout.addWidget(self.clean_edges_button)
 
         self.createMenus()
 
     def add_filter_tab(self, filter_name):
-        tab = QWidget()
-        tab_layout = QVBoxLayout(tab)
-
-        # Input image
-        input_figure = Figure(figsize=(5, 5))
-        input_canvas = FigureCanvas(input_figure)
-        tab_layout.addWidget(QLabel("Input Image"))
-        tab_layout.addWidget(input_canvas)
-
-        # Filtered image
-        filtered_figure = Figure(figsize=(5, 5))
-        filtered_canvas = FigureCanvas(filtered_figure)
-        tab_layout.addWidget(QLabel(f"{filter_name} Filtered Image"))
-        tab_layout.addWidget(filtered_canvas)
-
-        # Filter parameters
-        params_layout = QFormLayout()
         if filter_name == "Canny":
-            threshold1 = QSlider(Qt.Horizontal)
-            threshold1.setRange(0, 255)
-            threshold1.setValue(50)
-            threshold1.valueChanged.connect(lambda: self.update_filter(filter_name))
-            params_layout.addRow("Threshold 1:", threshold1)
-
-            threshold2 = QSlider(Qt.Horizontal)
-            threshold2.setRange(0, 255)
-            threshold2.setValue(150)
-            threshold2.valueChanged.connect(lambda: self.update_filter(filter_name))
-            params_layout.addRow("Threshold 2:", threshold2)
-
+            tab = CannyFilterTab(self)
         elif filter_name == "Sobel":
-            ksize = QSlider(Qt.Horizontal)
-            ksize.setRange(1, 31)
-            ksize.setValue(3)
-            ksize.setSingleStep(2)
-            ksize.setTickInterval(2)
-            ksize.setTickPosition(QSlider.TicksBelow)
-            ksize.valueChanged.connect(lambda: self.update_filter(filter_name))
-            params_layout.addRow("Kernel Size:", ksize)
-
+            tab = SobelFilterTab(self)
         elif filter_name == "Shearlet":
-            min_contrast = QSlider(Qt.Horizontal)
-            min_contrast.setRange(0, 100)
-            min_contrast.setValue(10)
-            min_contrast.valueChanged.connect(lambda: self.update_filter(filter_name))
-            params_layout.addRow("Min Contrast:", min_contrast)
+            tab = ShearletFilterTab(self)
+        else:
+            # For custom filters, you can create a generic FilterTab
+            tab = FilterTab(self)
 
-        tab_layout.addLayout(params_layout)
-
-        # Skeletonization
-        skeletonize_layout = QHBoxLayout()
-        skeletonize_checkbox = QCheckBox("Apply Skeletonization")
-        skeletonize_checkbox.stateChanged.connect(lambda: self.update_filter(filter_name))
-        skeletonize_layout.addWidget(skeletonize_checkbox)
-        tab_layout.addLayout(skeletonize_layout)
-
-        # Edge Link button
-        edge_link_button = QPushButton("Edge Link")
-        edge_link_button.clicked.connect(lambda: self.open_edge_link_window(filter_name))
-        tab_layout.addWidget(edge_link_button)
-
-        self.tab_widget.addTab(tab, filter_name)
+        self.tab_widget.insertTab(self.tab_widget.count() - 1, tab, filter_name)
 
     def handle_tab_click(self, index):
         if self.tab_widget.tabText(index) == "+":
             filter_name, ok = QInputDialog.getText(self, "New Filter", "Enter filter name:")
             if ok and filter_name:
                 self.add_filter_tab(filter_name)
-
-    def close_tab(self, index):
-        if self.tab_widget.count() > 2:  # Keep at least one tab and the "+" tab
-            self.tab_widget.removeTab(index)
-
-    def update_filter(self, filter_name):
-        if self.img is None:
-            return
-
-        tab_index = self.tab_widget.indexOf(self.tab_widget.findChild(QWidget, filter_name))
-        if tab_index == -1:
-            return
-
-        tab = self.tab_widget.widget(tab_index)
-        filtered_canvas = tab.findChild(FigureCanvas)
-
-        if filter_name == "Original":
-            filtered_image = self.img
-        elif filter_name == "Canny":
-            threshold1 = tab.findChild(QSlider, "Threshold 1").value()
-            threshold2 = tab.findChild(QSlider, "Threshold 2").value()
-            filtered_image = cv2.Canny(self.img, threshold1, threshold2)
-        elif filter_name == "Sobel":
-            ksize = tab.findChild(QSlider, "Kernel Size").value()
-            if ksize % 2 == 0:
-                ksize += 1
-            grad_x = cv2.Sobel(self.img, cv2.CV_64F, 1, 0, ksize=ksize)
-            grad_y = cv2.Sobel(self.img, cv2.CV_64F, 0, 1, ksize=ksize)
-            filtered_image = cv2.addWeighted(cv2.convertScaleAbs(grad_x), 0.5, cv2.convertScaleAbs(grad_y), 0.5, 0)
-        elif filter_name == "Shearlet":
-            min_contrast = tab.findChild(QSlider, "Min Contrast").value()
-            edges, _ = self.shearlet_system.detect(self.img, min_contrast=min_contrast)
-            filtered_image = (edges * 255).astype(np.uint8)
-        else:
-            # For custom filters, you may need to implement specific logic
-            filtered_image = self.img
-
-        # Apply skeletonization if checkbox is checked
-        skeletonize_checkbox = tab.findChild(QCheckBox, "Apply Skeletonization")
-        if skeletonize_checkbox and skeletonize_checkbox.isChecked():
-            filtered_image = self.apply_skeletonize(filtered_image)
-
-        self.show_image(filtered_canvas.figure, filtered_image)
-    def update_all_filters(self):
-        self.cannyThreshold1_label.setText(str(self.cannyThreshold1.value()))
-        self.cannyThreshold2_label.setText(str(self.cannyThreshold2.value()))
-        self.sobelKsize_label.setText(str(self.sobelKsize.value()))
-        self.shearletMinContrast_label.setText(str(self.shearletMinContrast.value()))
-        self.skeletonizeIterations_label.setText(str(self.skeletonizeIterations.value()))
-        self.apply_canny_filter()
-        self.apply_sobel_filter()
-        self.apply_shearlet_filter()
-
-    def apply_skeletonize(self, edges):
-        skeleton_iterations = self.skeletonizeIterations.value()
-        if skeleton_iterations > 0:
-            for _ in range(skeleton_iterations):
-                edges = thin(edges > 0)
-        return (edges * 255).astype(np.uint8)
-
-    def open_edge_link_window(self, filter_name):
-        if self.img is None:
-            QMessageBox.warning(self, "Error", "Please load an image first.")
-            return
-
-        tab_index = self.tab_widget.indexOf(self.tab_widget.findChild(QWidget, filter_name))
-        if tab_index == -1:
-            return
-
-        tab = self.tab_widget.widget(tab_index)
-        filtered_canvas = tab.findChild(FigureCanvas)
-        filtered_image = self.get_filtered_image(filter_name)
-
-        self.edge_link_window = EdgeLinkWindow(
-            filtered_image,
-            filter_name,
-            self.cannyThreshold1.value() if hasattr(self, 'cannyThreshold1') else 50,
-            self.cannyThreshold2.value() if hasattr(self, 'cannyThreshold2') else 150,
-            self.sobelKsize.value() if hasattr(self, 'sobelKsize') else 3,
-            self.shearletMinContrast.value() if hasattr(self, 'shearletMinContrast') else 10,
-            self
-        )
-        self.edge_link_window.show()
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.update_image_sizes()
@@ -1589,7 +1709,7 @@ class MyWindow(QMainWindow):
         toolsMenu = menubar.addMenu('Tools')
         imagePropertiesMenu = toolsMenu.addMenu('Image Properties')
         edgeLinkAction = QAction('Edge Link', self)
-        edgeLinkAction.triggered.connect(self.open_edge_link_window)
+        # edgeLinkAction.triggered.connect(self.open_edge_link_window)
         toolsMenu.addAction(edgeLinkAction)
 
         calculateStatsMenu = toolsMenu.addMenu('Calculate Statistics')
@@ -2128,8 +2248,17 @@ class MyWindow(QMainWindow):
             return None
 
         tab = self.tab_widget.widget(tab_index)
-        filtered_canvas = tab.findChild(FigureCanvas)
+        filtered_canvas = tab.findChildren(FigureCanvas)[1]  # The second FigureCanvas is for the filtered image
         return filtered_canvas.figure.axes[0].get_images()[0].get_array()
+
+    def get_filter_param(self, filter_name, param_name, default_value):
+        tab_index = self.tab_widget.indexOf(self.tab_widget.findChild(QWidget, filter_name))
+        if tab_index == -1:
+            return default_value
+
+        tab = self.tab_widget.widget(tab_index)
+        param_widget = tab.findChild(QSlider, param_name)
+        return param_widget.value() if param_widget else default_value
 
     def image_to_polygons(self, image):
         # Ensure the image is binary
@@ -2151,33 +2280,45 @@ class MyWindow(QMainWindow):
                     polygons.append(poly)
 
         return polygons
-    def load_image(self):
-        img_path, _ = QFileDialog.getOpenFileName(self, "Open Image File", "", "Image Files (*.png *.jpg *.bmp *.tif *.tiff)")
-        if img_path:
-            if img_path.lower().endswith(('.tif', '.tiff')):
-                with rasterio.open(img_path) as src:
-                    self.img = src.read(1)
-                    self.geotiff_transform = src.transform
-                    self.geotiff_crs = src.crs
-                    self.geotiff_projection = src.crs.to_wkt()
-            else:
-                self.img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
 
+    def load_image(self):
+        img_path, _ = QFileDialog.getOpenFileName(self, "Open Image File", "",
+                                                  "Image Files (*.png *.jpg *.bmp *.tif *.tiff)")
+        if img_path:
+            self.img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
             if self.img is not None:
                 self.img = cv2.normalize(self.img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
                 self.img = cv2.resize(self.img, (256, 256))
                 self.mask = np.zeros(self.img.shape[:2], np.uint8)
                 self.filtered_img = self.img.copy()
                 self.shearlet_system = EdgeSystem(*self.img.shape)
-                self.save_button.setEnabled(True)
 
                 # Update all tabs with the new image
                 for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
                     tab = self.tab_widget.widget(i)
-                    filter_name = self.tab_widget.tabText(i)
-                    input_canvas = tab.findChild(FigureCanvas)
-                    self.show_image(input_canvas.figure, self.img)
-                    self.update_filter(filter_name)
+                    if isinstance(tab, FilterTab):
+                        tab.set_input_image(self.img)
+
+    def clean_short_edges(self):
+        current_tab = self.tab_widget.currentWidget()
+        if isinstance(current_tab, FilterTab) and current_tab.filtered_image is not None:
+            # Convert the filtered image to a binary image
+            _, binary_image = cv2.threshold(current_tab.filtered_image, 127, 255, cv2.THRESH_BINARY)
+
+            # Find contours
+            contours, _ = cv2.findContours(binary_image, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+            # Filter out short edges
+            min_length = 10  # You can adjust this value
+            long_contours = [cnt for cnt in contours if cv2.arcLength(cnt, False) > min_length]
+
+            # Create a blank image and draw the long contours
+            cleaned_image = np.zeros_like(current_tab.filtered_image)
+            cv2.drawContours(cleaned_image, long_contours, -1, (255, 255, 255), 1)
+
+            # Update the filtered image in the tab
+            current_tab.filtered_image = cleaned_image
+            current_tab.show_filtered_image()
 
     def save_mask(self):
         if self.img is None:
@@ -2193,15 +2334,15 @@ class MyWindow(QMainWindow):
         self.skeletonizeIterations_label.setText(str(self.skeletonizeIterations.value()))
         self.apply_canny_filter()
 
-    def apply_canny_filter(self):
-        if self.img is None:
-            return
-        threshold1 = self.cannyThreshold1.value()
-        threshold2 = self.cannyThreshold2.value()
-        
-        edges = cv2.Canny(self.img, threshold1, threshold2)
-        edges = self.apply_skeletonize(edges)
-        self.show_canny_image(edges)
+    # def apply_canny_filter(self):
+    #     if self.img is None:
+    #         return
+    #     threshold1 = self.cannyThreshold1.value()
+    #     threshold2 = self.cannyThreshold2.value()
+    #
+    #     edges = cv2.Canny(self.img, threshold1, threshold2)
+    #     edges = self.apply_skeletonize(edges)
+    #     self.show_canny_image(edges)
     def apply_sobel_filter(self):
         if self.img is None:
             return
@@ -2216,104 +2357,112 @@ class MyWindow(QMainWindow):
         self.show_sobel_image(sobel)
 
     def show_original_image(self):
-        self.show_image(self.figure_before, self.img)
+        if self.img is not None:
+            # Assuming you have a FigureCanvas for the original image
+            fig = self.findChild(FigureCanvas, "original_image_canvas")
+            if fig:
+                fig.figure.clear()
+                ax = fig.figure.add_subplot(111)
+                ax.imshow(self.img, cmap='gray')
+                ax.axis('off')
+                fig.draw()
+    #
+    # def show_canny_image(self, edges):
+    #     self.show_image(self.figure_canny, edges)
+    #
+    # def show_sobel_image(self, sobel):
+    #     self.show_image(self.figure_sobel, sobel)
+    #
+    # def show_manual_interpretation(self):
+    #     self.show_image(self.figure_manual, self.img)
+    #
+    # def on_click_before(self, event):
+    #     if event.button == 1:  # Left click
+    #         self.open_full_view(self.img, "Original Image")
+    #
+    # def on_click_canny(self, event):
+    #     if event.button == 1:  # Left click
+    #         threshold1 = self.cannyThreshold1.value()
+    #         threshold2 = self.cannyThreshold2.value()
+    #         edges = cv2.Canny(self.img, threshold1, threshold2)
+    #         edges = self.apply_skeletonize(edges)
+    #         self.open_full_view(edges, "Canny Filtered Image", cmap='gray')
+    #
+    # def on_click_sobel(self, event):
+    #     if event.button == 1:  # Left click
+    #         ksize = self.sobelKsize.value()
+    #         if ksize % 2 == 0:
+    #             ksize += 1
+    #         grad_x = cv2.Sobel(self.img, cv2.CV_64F, 1, 0, ksize=ksize)
+    #         grad_y = cv2.Sobel(self.img, cv2.CV_64F, 0, 1, ksize=ksize)
+    #         sobel = np.sqrt(grad_x**2 + grad_y**2)
+    #         sobel = cv2.normalize(sobel, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    #         sobel = self.apply_skeletonize(sobel)
+    #         self.open_full_view(sobel, "Sobel Filtered Image", cmap='gray')
+    #
+    # def on_click_manual(self, event):
+    #     if event.button == 1:  # Left click
+    #         selected_filter = self.filter_type_combo.currentText()
+    #         self.open_full_view(self.img, "Manual Interpretation", is_manual_interpretation=True, filter_type=selected_filter)
 
-    def show_canny_image(self, edges):
-        self.show_image(self.figure_canny, edges)
+    # def open_full_view(self, image, title, cmap='gray', is_manual_interpretation=False, filter_type='canny'):
+    #     self.full_view_window = FullViewWindow(
+    #         image, title, self.img.shape, cmap, is_manual_interpretation, filter_type, self.shearlet_system,
+    #         canny_low=self.cannyThreshold1.value(),
+    #         canny_high=self.cannyThreshold2.value(),
+    #         sobel_ksize=self.sobelKsize.value(),
+    #         shearlet_min_contrast=self.shearletMinContrast.value()
+    #     )
+    #     self.full_view_window.exec_()
 
-    def show_sobel_image(self, sobel):
-        self.show_image(self.figure_sobel, sobel)
-
-    def show_manual_interpretation(self):
-        self.show_image(self.figure_manual, self.img)
-
-    def on_click_before(self, event):
-        if event.button == 1:  # Left click
-            self.open_full_view(self.img, "Original Image")
-
-    def on_click_canny(self, event):
-        if event.button == 1:  # Left click
-            threshold1 = self.cannyThreshold1.value()
-            threshold2 = self.cannyThreshold2.value()
-            edges = cv2.Canny(self.img, threshold1, threshold2)
-            edges = self.apply_skeletonize(edges)
-            self.open_full_view(edges, "Canny Filtered Image", cmap='gray')
-
-    def on_click_sobel(self, event):
-        if event.button == 1:  # Left click
-            ksize = self.sobelKsize.value()
-            if ksize % 2 == 0:
-                ksize += 1
-            grad_x = cv2.Sobel(self.img, cv2.CV_64F, 1, 0, ksize=ksize)
-            grad_y = cv2.Sobel(self.img, cv2.CV_64F, 0, 1, ksize=ksize)
-            sobel = np.sqrt(grad_x**2 + grad_y**2)
-            sobel = cv2.normalize(sobel, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-            sobel = self.apply_skeletonize(sobel)
-            self.open_full_view(sobel, "Sobel Filtered Image", cmap='gray')
-
-    def on_click_manual(self, event):
-        if event.button == 1:  # Left click
-            selected_filter = self.filter_type_combo.currentText()
-            self.open_full_view(self.img, "Manual Interpretation", is_manual_interpretation=True, filter_type=selected_filter)
-
-    def open_full_view(self, image, title, cmap='gray', is_manual_interpretation=False, filter_type='canny'):
-        self.full_view_window = FullViewWindow(
-            image, title, self.img.shape, cmap, is_manual_interpretation, filter_type, self.shearlet_system,
-            canny_low=self.cannyThreshold1.value(),
-            canny_high=self.cannyThreshold2.value(),
-            sobel_ksize=self.sobelKsize.value(),
-            shearlet_min_contrast=self.shearletMinContrast.value()
-        )
-        self.full_view_window.exec_()
-
-    def update_canny_label(self):
-        self.cannyThreshold1_label.setText(str(self.cannyThreshold1.value()))
-        self.cannyThreshold2_label.setText(str(self.cannyThreshold2.value()))
-        self.apply_canny_filter()
-        self.update_full_view_window()
-
-    def update_sobel_label(self):
-        self.sobelKsize_label.setText(str(self.sobelKsize.value()))
-        self.apply_sobel_filter()
-        self.update_full_view_window()
-
-    def apply_shearlet_filter(self):
-        if self.img is None or self.shearlet_system is None:
-            return
-        min_contrast = self.shearletMinContrast.value()
-        edges, orientations = self.shearlet_system.detect(self.img, min_contrast=min_contrast)
-        edges = (edges * 255).astype(np.uint8)
-        edges = self.apply_skeletonize(edges)
-        thinned_edges = mask(edges, thin_mask(edges))
-        edge_overlay = overlay(self.img, thinned_edges)
-        self.show_shearlet_image(edge_overlay)
-
-    def show_shearlet_image(self, edges):
-        self.show_image(self.figure_shearlet, edges, cmap='jet')
-
-    def on_click_shearlet(self, event):
-        if event.button == 1:  # Left click
-            min_contrast = self.shearletMinContrast.value()
-            edges, orientations = self.shearlet_system.detect(self.img, min_contrast=min_contrast)
-            edges = (edges * 255).astype(np.uint8)
-            edges = self.apply_skeletonize(edges)
-            thinned_edges = mask(edges, thin_mask(edges))
-            edge_overlay = overlay(self.img, thinned_edges)
-            self.open_full_view(edge_overlay, "Shearlet Filtered Image", cmap=None)
-
-    def update_shearlet_label(self):
-        self.shearletMinContrast_label.setText(str(self.shearletMinContrast.value()))
-        self.apply_shearlet_filter()
-        self.update_full_view_window()
-
-    def update_full_view_window(self):
-        if self.full_view_window and self.full_view_window.is_manual_interpretation:
-            self.full_view_window.update_thresholds(
-                canny_low=self.cannyThreshold1.value(),
-                canny_high=self.cannyThreshold2.value(),
-                sobel_ksize=self.sobelKsize.value(),
-                shearlet_min_contrast=self.shearletMinContrast.value()
-            )
+    # def update_canny_label(self):
+    #     self.cannyThreshold1_label.setText(str(self.cannyThreshold1.value()))
+    #     self.cannyThreshold2_label.setText(str(self.cannyThreshold2.value()))
+    #     self.apply_canny_filter()
+    #     self.update_full_view_window()
+    #
+    # def update_sobel_label(self):
+    #     self.sobelKsize_label.setText(str(self.sobelKsize.value()))
+    #     self.apply_sobel_filter()
+    #     self.update_full_view_window()
+    #
+    # def apply_shearlet_filter(self):
+    #     if self.img is None or self.shearlet_system is None:
+    #         return
+    #     min_contrast = self.shearletMinContrast.value()
+    #     edges, orientations = self.shearlet_system.detect(self.img, min_contrast=min_contrast)
+    #     edges = (edges * 255).astype(np.uint8)
+    #     edges = self.apply_skeletonize(edges)
+    #     thinned_edges = mask(edges, thin_mask(edges))
+    #     edge_overlay = overlay(self.img, thinned_edges)
+    #     self.show_shearlet_image(edge_overlay)
+    #
+    # def show_shearlet_image(self, edges):
+    #     self.show_image(self.figure_shearlet, edges, cmap='jet')
+    #
+    # def on_click_shearlet(self, event):
+    #     if event.button == 1:  # Left click
+    #         min_contrast = self.shearletMinContrast.value()
+    #         edges, orientations = self.shearlet_system.detect(self.img, min_contrast=min_contrast)
+    #         edges = (edges * 255).astype(np.uint8)
+    #         edges = self.apply_skeletonize(edges)
+    #         thinned_edges = mask(edges, thin_mask(edges))
+    #         edge_overlay = overlay(self.img, thinned_edges)
+    #         self.open_full_view(edge_overlay, "Shearlet Filtered Image", cmap=None)
+    #
+    # def update_shearlet_label(self):
+    #     self.shearletMinContrast_label.setText(str(self.shearletMinContrast.value()))
+    #     self.apply_shearlet_filter()
+    #     self.update_full_view_window()
+    #
+    # def update_full_view_window(self):
+    #     if self.full_view_window and self.full_view_window.is_manual_interpretation:
+    #         self.full_view_window.update_thresholds(
+    #             canny_low=self.cannyThreshold1.value(),
+    #             canny_high=self.cannyThreshold2.value(),
+    #             sobel_ksize=self.sobelKsize.value(),
+    #             shearlet_min_contrast=self.shearletMinContrast.value()
+    #         )
 
 
 
