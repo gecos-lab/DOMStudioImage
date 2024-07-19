@@ -1,7 +1,7 @@
 import sys
 import cv2
 import numpy as np
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget,
+from PyQt5.QtWidgets import (QApplication, QTabWidget, QCheckBox, QFormLayout, QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget,
                              QPushButton, QGroupBox, QGridLayout, QSlider, QFileDialog, QDialog, QScrollArea, QComboBox, QMessageBox, QMenu, QAction, QInputDialog, QToolBar, QSizePolicy)
 from PyQt5.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -145,21 +145,20 @@ class BaseFilterTab(QWidget):
         self.original_image = image
         self.show_image(self.original_image)
 
-    def show_image(self, image):
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        ax.imshow(image, cmap='gray')
+    def show_image(self, figure, image, cmap='gray'):
+        figure.clear()
+        ax = figure.add_subplot(111)
+        ax.imshow(image, cmap=cmap, aspect='auto')
         ax.axis('off')
-        self.canvas.draw()
+        figure.tight_layout(pad=0)
+        figure.canvas.draw()
 
     def apply_filter(self):
         # To be implemented in subclasses
         pass
 
-    def apply_skeletonization(self):
-        if self.filtered_image is not None:
-            self.skeletonized_image = skeletonize(self.filtered_image > 0)
-            self.show_image(self.skeletonized_image)
+    def apply_skeletonize(self, image):
+        return skeletonize(image > 0).astype(np.uint8) * 255
 
     def apply_edgelink(self):
         if self.skeletonized_image is not None:
@@ -1309,156 +1308,157 @@ class MyWindow(QMainWindow):
         self.mask = None
         self.filtered_img = None
         self.shearlet_system = None
-        self.full_view_window = None
-        self.edge_link_window = None
         self.setGeometry(100, 100, 1200, 800)
         self.initUI()
 
     def initUI(self):
         self.setWindowTitle('DOMStudioImage')
-        self.setGeometry(100, 100, 1200, 800)
 
-        mainWidget = QWidget(self)
-        self.setCentralWidget(mainWidget)
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
 
-        mainLayout = QHBoxLayout(mainWidget)
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabsClosable(True)
+        self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        main_layout.addWidget(self.tab_widget)
 
-        leftPanel = QVBoxLayout()
-        mainLayout.addLayout(leftPanel)
+        # Add initial tabs
+        self.add_filter_tab("Original")
+        self.add_filter_tab("Canny")
+        self.add_filter_tab("Sobel")
+        self.add_filter_tab("Shearlet")
+
+        # Add "+" tab for creating new tabs
+        self.tab_widget.addTab(QWidget(), "+")
+        self.tab_widget.tabBarClicked.connect(self.handle_tab_click)
 
         # Image Selection
-        imageSelectionGroup = QGroupBox("Image Selection")
-        imageSelectionLayout = QVBoxLayout()
-        self.loadButton = QPushButton("Load Image")
-        self.loadButton.clicked.connect(self.load_image)
-        imageSelectionLayout.addWidget(self.loadButton)
-        self.saveButton = QPushButton("Save Mask")
-        self.saveButton.setEnabled(False)
-        self.saveButton.clicked.connect(self.save_mask)
-        imageSelectionLayout.addWidget(self.saveButton)
-        imageSelectionGroup.setLayout(imageSelectionLayout)
-        leftPanel.addWidget(imageSelectionGroup)
+        image_selection_layout = QHBoxLayout()
+        self.load_button = QPushButton("Load Image")
+        self.load_button.clicked.connect(self.load_image)
+        image_selection_layout.addWidget(self.load_button)
+        self.save_button = QPushButton("Save Mask")
+        self.save_button.setEnabled(False)
+        self.save_button.clicked.connect(self.save_mask)
+        image_selection_layout.addWidget(self.save_button)
+        main_layout.addLayout(image_selection_layout)
 
-        rightPanel = QVBoxLayout()
-        mainLayout.addLayout(rightPanel)
-
-        # Image Displays
-        displayGroup = QGroupBox("Image Displays")
-        displayLayout = QGridLayout()
-        displayLayout.setSpacing(10)  # Add some spacing between images
-
-
-        self.figure_before = Figure(figsize=(5, 5))  # Increase figure size
-        self.canvas_before = FigureCanvas(self.figure_before)
-        self.canvas_before.setMinimumSize(300, 300)  # Set minimum size
-        self.canvas_before.mpl_connect("button_press_event", self.on_click_before)
-        displayLayout.addWidget(QLabel("Original Image"), 0, 0)
-        displayLayout.addWidget(self.canvas_before, 1, 0)
-
-        self.figure_canny = Figure(figsize=(5, 5))
-        self.canvas_canny = FigureCanvas(self.figure_canny)
-        self.canvas_canny.setMinimumSize(300, 300)
-        self.canvas_canny.mpl_connect("button_press_event", self.on_click_canny)
-        displayLayout.addWidget(QLabel("Canny Filtered Image"), 0, 1)
-        displayLayout.addWidget(self.canvas_canny, 1, 1)
-
-        self.figure_sobel = Figure(figsize=(5, 5))
-        self.canvas_sobel = FigureCanvas(self.figure_sobel)
-        self.canvas_sobel.setMinimumSize(300, 300)
-        self.canvas_sobel.mpl_connect("button_press_event", self.on_click_sobel)
-        displayLayout.addWidget(QLabel("Sobel Filtered Image"), 2, 0)
-        displayLayout.addWidget(self.canvas_sobel, 3, 0)
-
-        self.figure_manual = Figure(figsize=(5, 5))
-        self.canvas_manual = FigureCanvas(self.figure_manual)
-        self.canvas_manual.setMinimumSize(300, 300)
-        self.canvas_manual.mpl_connect("button_press_event", self.on_click_manual)
-        displayLayout.addWidget(QLabel("Manual Interpretation"), 4, 0)
-        displayLayout.addWidget(self.canvas_manual, 5, 0)
-
-        displayGroup.setLayout(displayLayout)
-        rightPanel.addWidget(displayGroup)
-
-        # Controls for all filters
-        filterControlsGroup = QGroupBox("Filter Controls")
-        filterLayout = QVBoxLayout()
-
-        # Canny Threshold 1
-        self.cannyThreshold1 = QSlider(Qt.Horizontal)
-        self.cannyThreshold1.setRange(0, 255)
-        self.cannyThreshold1.setValue(50)
-        self.cannyThreshold1.valueChanged.connect(self.update_all_filters)
-        filterLayout.addWidget(QLabel("Canny Threshold 1"))
-        filterLayout.addWidget(self.cannyThreshold1)
-        self.cannyThreshold1_label = QLabel("50")
-        filterLayout.addWidget(self.cannyThreshold1_label)
-
-        # Canny Threshold 2
-        self.cannyThreshold2 = QSlider(Qt.Horizontal)
-        self.cannyThreshold2.setRange(0, 255)
-        self.cannyThreshold2.setValue(150)
-        self.cannyThreshold2.valueChanged.connect(self.update_all_filters)
-        filterLayout.addWidget(QLabel("Canny Threshold 2"))
-        filterLayout.addWidget(self.cannyThreshold2)
-        self.cannyThreshold2_label = QLabel("150")
-        filterLayout.addWidget(self.cannyThreshold2_label)
-
-        # Sobel Kernel Size
-        self.sobelKsize = QSlider(Qt.Horizontal)
-        self.sobelKsize.setRange(1, 31)
-        self.sobelKsize.setValue(3)
-        self.sobelKsize.setSingleStep(2)
-        self.sobelKsize.setTickInterval(2)
-        self.sobelKsize.setTickPosition(QSlider.TicksBelow)
-        self.sobelKsize.valueChanged.connect(self.update_all_filters)
-        filterLayout.addWidget(QLabel("Sobel Kernel Size"))
-        filterLayout.addWidget(self.sobelKsize)
-        self.sobelKsize_label = QLabel("3")
-        filterLayout.addWidget(self.sobelKsize_label)
-
-        # Shearlet Min Contrast
-        self.shearletMinContrast = QSlider(Qt.Horizontal)
-        self.shearletMinContrast.setRange(0, 100)
-        self.shearletMinContrast.setValue(10)
-        self.shearletMinContrast.valueChanged.connect(self.update_all_filters)
-        filterLayout.addWidget(QLabel("Shearlet Min Contrast"))
-        filterLayout.addWidget(self.shearletMinContrast)
-        self.shearletMinContrast_label = QLabel("10")
-        filterLayout.addWidget(self.shearletMinContrast_label)
-
-        # Skeletonize Iterations
-        self.skeletonizeIterations = QSlider(Qt.Horizontal)
-        self.skeletonizeIterations.setRange(0, 10)
-        self.skeletonizeIterations.setValue(0)
-        self.skeletonizeIterations.valueChanged.connect(self.update_all_filters)
-        filterLayout.addWidget(QLabel("Skeletonize Iterations"))
-        filterLayout.addWidget(self.skeletonizeIterations)
-        self.skeletonizeIterations_label = QLabel("0")
-        filterLayout.addWidget(self.skeletonizeIterations_label)
-
-        filterControlsGroup.setLayout(filterLayout)
-        rightPanel.addWidget(filterControlsGroup)
         self.createMenus()
 
-        self.figure_shearlet = Figure(figsize=(5, 5))
-        self.canvas_shearlet = FigureCanvas(self.figure_shearlet)
-        self.canvas_shearlet.setMinimumSize(300, 300)
-        self.canvas_shearlet.mpl_connect("button_press_event", self.on_click_shearlet)
-        displayLayout.addWidget(QLabel("Shearlet Filtered Image"), 2, 1)
-        displayLayout.addWidget(self.canvas_shearlet, 3, 1)
+    def add_filter_tab(self, filter_name):
+        tab = QWidget()
+        tab_layout = QVBoxLayout(tab)
 
-        # Add filter type selection for EdgeLink
-        self.edge_link_filter_combo = QComboBox()
-        self.edge_link_filter_combo.addItems(['canny', 'sobel', 'shearlet'])
-        rightPanel.addWidget(QLabel("Edge Link Filter"))
-        rightPanel.addWidget(self.edge_link_filter_combo)
+        # Input image
+        input_figure = Figure(figsize=(5, 5))
+        input_canvas = FigureCanvas(input_figure)
+        tab_layout.addWidget(QLabel("Input Image"))
+        tab_layout.addWidget(input_canvas)
 
-        # Add for manual interpretation
-        self.filter_type_combo = QComboBox()
-        self.filter_type_combo.addItems(['canny', 'sobel', 'shearlet'])
-        rightPanel.addWidget(QLabel("Manual Interpretation Filter"))
-        rightPanel.addWidget(self.filter_type_combo)
+        # Filtered image
+        filtered_figure = Figure(figsize=(5, 5))
+        filtered_canvas = FigureCanvas(filtered_figure)
+        tab_layout.addWidget(QLabel(f"{filter_name} Filtered Image"))
+        tab_layout.addWidget(filtered_canvas)
 
+        # Filter parameters
+        params_layout = QFormLayout()
+        if filter_name == "Canny":
+            threshold1 = QSlider(Qt.Horizontal)
+            threshold1.setRange(0, 255)
+            threshold1.setValue(50)
+            threshold1.valueChanged.connect(lambda: self.update_filter(filter_name))
+            params_layout.addRow("Threshold 1:", threshold1)
+
+            threshold2 = QSlider(Qt.Horizontal)
+            threshold2.setRange(0, 255)
+            threshold2.setValue(150)
+            threshold2.valueChanged.connect(lambda: self.update_filter(filter_name))
+            params_layout.addRow("Threshold 2:", threshold2)
+
+        elif filter_name == "Sobel":
+            ksize = QSlider(Qt.Horizontal)
+            ksize.setRange(1, 31)
+            ksize.setValue(3)
+            ksize.setSingleStep(2)
+            ksize.setTickInterval(2)
+            ksize.setTickPosition(QSlider.TicksBelow)
+            ksize.valueChanged.connect(lambda: self.update_filter(filter_name))
+            params_layout.addRow("Kernel Size:", ksize)
+
+        elif filter_name == "Shearlet":
+            min_contrast = QSlider(Qt.Horizontal)
+            min_contrast.setRange(0, 100)
+            min_contrast.setValue(10)
+            min_contrast.valueChanged.connect(lambda: self.update_filter(filter_name))
+            params_layout.addRow("Min Contrast:", min_contrast)
+
+        tab_layout.addLayout(params_layout)
+
+        # Skeletonization
+        skeletonize_layout = QHBoxLayout()
+        skeletonize_checkbox = QCheckBox("Apply Skeletonization")
+        skeletonize_checkbox.stateChanged.connect(lambda: self.update_filter(filter_name))
+        skeletonize_layout.addWidget(skeletonize_checkbox)
+        tab_layout.addLayout(skeletonize_layout)
+
+        # Edge Link button
+        edge_link_button = QPushButton("Edge Link")
+        edge_link_button.clicked.connect(lambda: self.open_edge_link_window(filter_name))
+        tab_layout.addWidget(edge_link_button)
+
+        self.tab_widget.addTab(tab, filter_name)
+
+    def handle_tab_click(self, index):
+        if self.tab_widget.tabText(index) == "+":
+            filter_name, ok = QInputDialog.getText(self, "New Filter", "Enter filter name:")
+            if ok and filter_name:
+                self.add_filter_tab(filter_name)
+
+    def close_tab(self, index):
+        if self.tab_widget.count() > 2:  # Keep at least one tab and the "+" tab
+            self.tab_widget.removeTab(index)
+
+    def update_filter(self, filter_name):
+        if self.img is None:
+            return
+
+        tab_index = self.tab_widget.indexOf(self.tab_widget.findChild(QWidget, filter_name))
+        if tab_index == -1:
+            return
+
+        tab = self.tab_widget.widget(tab_index)
+        filtered_canvas = tab.findChild(FigureCanvas)
+
+        if filter_name == "Original":
+            filtered_image = self.img
+        elif filter_name == "Canny":
+            threshold1 = tab.findChild(QSlider, "Threshold 1").value()
+            threshold2 = tab.findChild(QSlider, "Threshold 2").value()
+            filtered_image = cv2.Canny(self.img, threshold1, threshold2)
+        elif filter_name == "Sobel":
+            ksize = tab.findChild(QSlider, "Kernel Size").value()
+            if ksize % 2 == 0:
+                ksize += 1
+            grad_x = cv2.Sobel(self.img, cv2.CV_64F, 1, 0, ksize=ksize)
+            grad_y = cv2.Sobel(self.img, cv2.CV_64F, 0, 1, ksize=ksize)
+            filtered_image = cv2.addWeighted(cv2.convertScaleAbs(grad_x), 0.5, cv2.convertScaleAbs(grad_y), 0.5, 0)
+        elif filter_name == "Shearlet":
+            min_contrast = tab.findChild(QSlider, "Min Contrast").value()
+            edges, _ = self.shearlet_system.detect(self.img, min_contrast=min_contrast)
+            filtered_image = (edges * 255).astype(np.uint8)
+        else:
+            # For custom filters, you may need to implement specific logic
+            filtered_image = self.img
+
+        # Apply skeletonization if checkbox is checked
+        skeletonize_checkbox = tab.findChild(QCheckBox, "Apply Skeletonization")
+        if skeletonize_checkbox and skeletonize_checkbox.isChecked():
+            filtered_image = self.apply_skeletonize(filtered_image)
+
+        self.show_image(filtered_canvas.figure, filtered_image)
     def update_all_filters(self):
         self.cannyThreshold1_label.setText(str(self.cannyThreshold1.value()))
         self.cannyThreshold2_label.setText(str(self.cannyThreshold2.value()))
@@ -1475,26 +1475,27 @@ class MyWindow(QMainWindow):
             for _ in range(skeleton_iterations):
                 edges = thin(edges > 0)
         return (edges * 255).astype(np.uint8)
-    def open_edge_link_window(self):
+
+    def open_edge_link_window(self, filter_name):
         if self.img is None:
             QMessageBox.warning(self, "Error", "Please load an image first.")
             return
 
-        selected_filter = self.edge_link_filter_combo.currentText()
-        
-        # Get current threshold values
-        canny_low = self.cannyThreshold1.value()
-        canny_high = self.cannyThreshold2.value()
-        sobel_ksize = self.sobelKsize.value()
-        shearlet_min_contrast = self.shearletMinContrast.value()
+        tab_index = self.tab_widget.indexOf(self.tab_widget.findChild(QWidget, filter_name))
+        if tab_index == -1:
+            return
+
+        tab = self.tab_widget.widget(tab_index)
+        filtered_canvas = tab.findChild(FigureCanvas)
+        filtered_image = self.get_filtered_image(filter_name)
 
         self.edge_link_window = EdgeLinkWindow(
-            self.img, 
-            selected_filter, 
-            canny_low, 
-            canny_high, 
-            sobel_ksize, 
-            shearlet_min_contrast, 
+            filtered_image,
+            filter_name,
+            self.cannyThreshold1.value() if hasattr(self, 'cannyThreshold1') else 50,
+            self.cannyThreshold2.value() if hasattr(self, 'cannyThreshold2') else 150,
+            self.sobelKsize.value() if hasattr(self, 'sobelKsize') else 3,
+            self.shearletMinContrast.value() if hasattr(self, 'shearletMinContrast') else 10,
             self
         )
         self.edge_link_window.show()
@@ -2121,21 +2122,14 @@ class MyWindow(QMainWindow):
                     # Save as regular TIFF
                     cv2.imwrite(save_path, filtered_image)
 
-    def get_filtered_image(self, filter_type):
-        if filter_type == "Original":
-            return self.img
-        elif filter_type == "Canny":
-            return cv2.Canny(self.img, self.cannyThreshold1.value(), self.cannyThreshold2.value())
-        elif filter_type == "Sobel":
-            ksize = self.sobelKsize.value()
-            if ksize % 2 == 0:
-                ksize += 1
-            grad_x = cv2.Sobel(self.img, cv2.CV_64F, 1, 0, ksize=ksize)
-            grad_y = cv2.Sobel(self.img, cv2.CV_64F, 0, 1, ksize=ksize)
-            return cv2.addWeighted(cv2.convertScaleAbs(grad_x), 0.5, cv2.convertScaleAbs(grad_y), 0.5, 0)
-        elif filter_type == "Shearlet":
-            edges, _ = self.shearlet_system.detect(self.img, min_contrast=self.shearletMinContrast.value())
-            return (edges * 255).astype(np.uint8)
+    def get_filtered_image(self, filter_name):
+        tab_index = self.tab_widget.indexOf(self.tab_widget.findChild(QWidget, filter_name))
+        if tab_index == -1:
+            return None
+
+        tab = self.tab_widget.widget(tab_index)
+        filtered_canvas = tab.findChild(FigureCanvas)
+        return filtered_canvas.figure.axes[0].get_images()[0].get_array()
 
     def image_to_polygons(self, image):
         # Ensure the image is binary
@@ -2161,9 +2155,8 @@ class MyWindow(QMainWindow):
         img_path, _ = QFileDialog.getOpenFileName(self, "Open Image File", "", "Image Files (*.png *.jpg *.bmp *.tif *.tiff)")
         if img_path:
             if img_path.lower().endswith(('.tif', '.tiff')):
-                # Load GeoTIFF
                 with rasterio.open(img_path) as src:
-                    self.img = src.read(1)  # Read the first band
+                    self.img = src.read(1)
                     self.geotiff_transform = src.transform
                     self.geotiff_crs = src.crs
                     self.geotiff_projection = src.crs.to_wkt()
@@ -2171,18 +2164,20 @@ class MyWindow(QMainWindow):
                 self.img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
 
             if self.img is not None:
-                # Convert to PNG format for internal processing
                 self.img = cv2.normalize(self.img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
                 self.img = cv2.resize(self.img, (256, 256))
                 self.mask = np.zeros(self.img.shape[:2], np.uint8)
                 self.filtered_img = self.img.copy()
                 self.shearlet_system = EdgeSystem(*self.img.shape)
-                self.show_original_image()
-                self.apply_canny_filter()
-                self.apply_sobel_filter()
-                self.apply_shearlet_filter()
-                self.show_manual_interpretation()
-                self.saveButton.setEnabled(True)
+                self.save_button.setEnabled(True)
+
+                # Update all tabs with the new image
+                for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
+                    tab = self.tab_widget.widget(i)
+                    filter_name = self.tab_widget.tabText(i)
+                    input_canvas = tab.findChild(FigureCanvas)
+                    self.show_image(input_canvas.figure, self.img)
+                    self.update_filter(filter_name)
 
     def save_mask(self):
         if self.img is None:
