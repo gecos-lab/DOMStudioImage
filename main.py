@@ -1563,11 +1563,10 @@ class MyWindow(QMainWindow):
         self.filtered_img = None
         self.shearlet_system = None
         self.setGeometry(100, 100, 1200, 800)
+        self.initUI()
         self.shearletMinContrast = QSlider(Qt.Horizontal)
         self.shearletMinContrast.setRange(0, 100)
         self.shearletMinContrast.setValue(10)
-        self.available_filters = ["Canny", "Sobel", "Shearlet"]
-        self.initUI()
 
     def initUI(self):
         self.setWindowTitle('DOMStudioImage')
@@ -1578,8 +1577,7 @@ class MyWindow(QMainWindow):
 
         # Create tab widget
         self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)  # Make tabs closable
-        self.tab_widget.tabCloseRequested.connect(self.close_tab)  # Connect close signal
+        self.tab_widget.setMovable(True)  # Allow tabs to be moved
         main_layout.addWidget(self.tab_widget)
 
         # Add filter tabs
@@ -1588,13 +1586,8 @@ class MyWindow(QMainWindow):
         self.add_filter_tab("Shearlet")
 
         # Add "+" tab for creating new tabs
-        add_tab_button = QPushButton("+")
-        add_tab_button.setFixedSize(25, 20)  # Adjust size as needed
-        add_tab_button.clicked.connect(self.show_add_tab_menu)
-        self.tab_widget.setCornerWidget(add_tab_button, Qt.TopLeftCorner)
-        # # Add "+" tab for creating new tabs
-        # self.tab_widget.addTab(QWidget(), "+")
-        # self.tab_widget.tabBarClicked.connect(self.handle_tab_click)
+        self.tab_widget.addTab(QWidget(), "+")
+        self.tab_widget.tabBarClicked.connect(self.handle_tab_click)
 
         # Load image button
         self.load_button = QPushButton("Load Image")
@@ -1616,25 +1609,11 @@ class MyWindow(QMainWindow):
         elif filter_name == "Shearlet":
             tab = ShearletFilterTab(self)
         else:
+            # For custom filters, you can create a generic FilterTab
             tab = FilterTab(self)
 
-        index = self.tab_widget.addTab(tab, filter_name)
-        self.tab_widget.setCurrentIndex(index)
-        return tab
+        self.tab_widget.insertTab(self.tab_widget.count() - 1, tab, filter_name)
 
-    def show_add_tab_menu(self):
-        menu = QMenu(self)
-        for filter_name in self.available_filters:
-            action = QAction(filter_name, self)
-            action.triggered.connect(lambda checked, name=filter_name: self.add_filter_tab(name))
-            menu.addAction(action)
-
-        add_tab_button = self.tab_widget.cornerWidget(Qt.TopLeftCorner)
-        menu.exec_(add_tab_button.mapToGlobal(add_tab_button.rect().bottomLeft()))
-
-    def close_tab(self, index):
-        if self.tab_widget.count() > 1:  # Ensure at least one tab remains
-            self.tab_widget.removeTab(index)
     def handle_tab_click(self, index):
         if self.tab_widget.tabText(index) == "+":
             filter_name, ok = QInputDialog.getText(self, "New Filter", "Enter filter name:")
