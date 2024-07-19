@@ -107,6 +107,147 @@ def a_star(costs, start, end):
     path.append(start)
     path.reverse()
     return path
+class BaseFilterTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.original_image = None
+        self.filtered_image = None
+        self.skeletonized_image = None
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+        
+        # Image display
+        self.figure = Figure(figsize=(5, 5))
+        self.canvas = FigureCanvas(self.figure)
+        layout.addWidget(self.canvas)
+        
+        # Controls
+        controls_layout = QHBoxLayout()
+        self.apply_filter_button = QPushButton("Apply Filter")
+        self.apply_filter_button.clicked.connect(self.apply_filter)
+        controls_layout.addWidget(self.apply_filter_button)
+        
+        self.apply_skeleton_button = QPushButton("Apply Skeletonization")
+        self.apply_skeleton_button.clicked.connect(self.apply_skeletonization)
+        controls_layout.addWidget(self.apply_skeleton_button)
+        
+        self.apply_edgelink_button = QPushButton("Apply Edge Link")
+        self.apply_edgelink_button.clicked.connect(self.apply_edgelink)
+        controls_layout.addWidget(self.apply_edgelink_button)
+        
+        layout.addLayout(controls_layout)
+        
+        self.setLayout(layout)
+
+    def set_image(self, image):
+        self.original_image = image
+        self.show_image(self.original_image)
+
+    def show_image(self, image):
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.imshow(image, cmap='gray')
+        ax.axis('off')
+        self.canvas.draw()
+
+    def apply_filter(self):
+        # To be implemented in subclasses
+        pass
+
+    def apply_skeletonization(self):
+        if self.filtered_image is not None:
+            self.skeletonized_image = skeletonize(self.filtered_image > 0)
+            self.show_image(self.skeletonized_image)
+
+    def apply_edgelink(self):
+        if self.skeletonized_image is not None:
+            edge_linker = edgelink(self.skeletonized_image, minilength=10)  # Adjust minilength as needed
+            edge_linker.get_edgelist()
+            # Visualize edge_linker.edgelist here
+            # For now, we'll just show a message
+            QMessageBox.information(self, "Edge Link", "Edge linking applied. Visualization to be implemented.")
+
+class CannyFilterTab(BaseFilterTab):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.initUI()
+
+    def initUI(self):
+        super().initUI()
+        # Add Canny-specific controls
+        self.threshold1_slider = QSlider(Qt.Horizontal)
+        self.threshold1_slider.setRange(0, 255)
+        self.threshold1_slider.setValue(100)
+        self.layout().addWidget(QLabel("Threshold 1"))
+        self.layout().addWidget(self.threshold1_slider)
+
+        self.threshold2_slider = QSlider(Qt.Horizontal)
+        self.threshold2_slider.setRange(0, 255)
+        self.threshold2_slider.setValue(200)
+        self.layout().addWidget(QLabel("Threshold 2"))
+        self.layout().addWidget(self.threshold2_slider)
+
+    def apply_filter(self):
+        if self.original_image is not None:
+            self.filtered_image = cv2.Canny(self.original_image, 
+                                            self.threshold1_slider.value(), 
+                                            self.threshold2_slider.value())
+            self.show_image(self.filtered_image)
+
+class CannyFilterTab(BaseFilterTab):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.initUI()
+
+    def initUI(self):
+        super().initUI()
+        # Add Canny-specific controls
+        self.threshold1_slider = QSlider(Qt.Horizontal)
+        self.threshold1_slider.setRange(0, 255)
+        self.threshold1_slider.setValue(100)
+        self.layout().addWidget(QLabel("Threshold 1"))
+        self.layout().addWidget(self.threshold1_slider)
+
+        self.threshold2_slider = QSlider(Qt.Horizontal)
+        self.threshold2_slider.setRange(0, 255)
+        self.threshold2_slider.setValue(200)
+        self.layout().addWidget(QLabel("Threshold 2"))
+        self.layout().addWidget(self.threshold2_slider)
+
+    def apply_filter(self):
+        if self.original_image is not None:
+            self.filtered_image = cv2.Canny(self.original_image, 
+                                            self.threshold1_slider.value(), 
+                                            self.threshold2_slider.value())
+            self.show_image(self.filtered_image)
+
+    class ShearletFilterTab(BaseFilterTab):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.shearlet_system = None
+            self.initUI()
+
+        def initUI(self):
+            super().initUI()
+            # Add Shearlet-specific controls
+            self.min_contrast_slider = QSlider(Qt.Horizontal)
+            self.min_contrast_slider.setRange(0, 100)
+            self.min_contrast_slider.setValue(10)
+            self.layout().addWidget(QLabel("Min Contrast"))
+            self.layout().addWidget(self.min_contrast_slider)
+
+        def set_image(self, image):
+            super().set_image(image)
+            self.shearlet_system = EdgeSystem(*image.shape)
+
+        def apply_filter(self):
+            if self.original_image is not None and self.shearlet_system is not None:
+                edges, _ = self.shearlet_system.detect(self.original_image, 
+                                                    min_contrast=self.min_contrast_slider.value())
+                self.filtered_image = (edges * 255).astype(np.uint8)
+                self.show_image(self.filtered_image)
 
 class EdgeLinkWindow(QDialog):
     def __init__(self, image, filter_type, canny_low, canny_high, sobel_ksize, shearlet_min_contrast, parent=None):
