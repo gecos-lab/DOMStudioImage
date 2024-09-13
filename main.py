@@ -194,15 +194,17 @@ class FilterTab(QWidget):
         self.edge_link_window.show()
 
 class ManualInterpretationWindow(QDialog):
-    def __init__(self, image, parent=None):
+    def __init__(self, original_image, filtered_image, parent=None):
         super().__init__(parent)
-        self.image = image
+        self.original_image = original_image
+        self.filtered_image = filtered_image
         self.lines = []
         self.current_line = []
         self.is_drawing = False
         self.is_semi_auto = False
         self.is_edit_mode = False
         self.semi_auto_start_point = None
+        self.edge_map = self.create_edge_map()
         self.initUI()
 
     def initUI(self):
@@ -335,12 +337,66 @@ class ManualInterpretationWindow(QDialog):
         self.canvas.draw()
 
     def semi_automatic_tracking(self, start_point, end_point):
-        # Implement semi-automatic tracking here
-        # This is a placeholder implementation
-        tracked_line = [start_point, end_point]
-        self.lines.append(tracked_line)
-        self.draw_lines()
+        # Convert points to image coordinates
+        start = (int(start_point[1]), int(start_point[0]))
+        end = (int(end_point[1]), int(end_point[0]))
 
+        # Use A* algorithm to find the path
+        path = self.a_star(self.edge_map, start, end)
+
+        if path:
+            # Convert path back to display coordinates
+            tracked_line = [(x, y) for y, x in path]
+            self.lines.append(tracked_line)
+            self.draw_lines()
+        else:
+            QMessageBox.warning(self, "Path Not Found", "Could not find a path between the selected points. Try selecting closer points or adjusting the filter settings.")
+    def create_edge_map(self):
+        # Use the filtered image to create the edge map
+        blurred_image = gaussian_filter(self.filtered_image, sigma=2)
+        edges = feature.canny(blurred_image, sigma=2)
+        return 1 - edges
+
+    def a_star(self, cost_map, start, goal):
+        def heuristic(a, b):
+            return np.hypot(b[0] - a[0], b[1] - a[1])
+
+        neighbors = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+        close_set = set()
+        came_from = {}
+        gscore = {start: 0}
+        fscore = {start: heuristic(start, goal)}
+        oheap = []
+        heapq.heappush(oheap, (fscore[start], start))
+
+        while oheap:
+            current = heapq.heappop(oheap)[1]
+
+            if current == goal:
+                path = []
+                while current in came_from:
+                    path.append(current)
+                    current = came_from[current]
+                path.append(start)
+                path.reverse()
+                return path
+
+            close_set.add(current)
+
+            for i, j in neighbors:
+                neighbor = current[0] + i, current[1] + j
+                if 0 <= neighbor[0] < cost_map.shape[0] and 0 <= neighbor[1] < cost_map.shape[1]:
+                    if neighbor in close_set:
+                        continue
+                    tentative_g_score = gscore[current] + cost_map[neighbor]
+                    if tentative_g_score < gscore.get(neighbor, np.inf):
+                        came_from[neighbor] = current
+                        gscore[neighbor] = tentative_g_score
+                        fscore[neighbor] = gscore[neighbor] + heuristic(neighbor, goal)
+                        heapq.heappush(oheap, (fscore[neighbor], neighbor))
+
+        return None
     def edit_nearest_point(self, x, y):
         min_distance = float('inf')
         nearest_line = None
@@ -357,6 +413,28 @@ class ManualInterpretationWindow(QDialog):
         if nearest_line is not None and min_distance < 10:  # Threshold for selection
             self.lines[nearest_line][nearest_point_index] = (x, y)
             self.draw_lines()
+
+    def draw_lines(self, temp_line=None):
+        self.show_image()
+        for line in self.lines:
+            if line and len(line) > 1:
+                x, y = zip(*line)
+                self.ax.plot(x, y, 'r-')
+        if self.current_line and len(self.current_line) > 1:
+            x, y = zip(*self.current_line)
+            self.ax.plot(x, y, 'r-')
+        if temp_line and len(temp_line) > 1:
+            x, y = zip(*temp_line)
+            self.ax.plot(x, y, 'r--')
+        self.canvas.draw()
+
+    def show_image(self):
+        self.figure.clear()
+        self.ax = self.figure.add_subplot(111)
+        self.ax.imshow(self.original_image, cmap='gray')
+        self.ax.imshow(self.edge_map, cmap='jet', alpha=0.3)  # Overlay edge map
+        self.ax.axis('off')
+        self.canvas.draw()
 class CannyFilterTab(FilterTab):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1823,11 +1901,11 @@ class MyWindow(QMainWindow):
 
     def open_manual_interpretation(self):
         current_tab = self.tab_widget.currentWidget()
-        if isinstance(current_tab, FilterTab) and current_tab.filtered_image is not None:
-            self.manual_interpretation_window = ManualInterpretationWindow(current_tab.filtered_image, self)
+        if isinstance(current_tab, FilterTab) and self.img is not None:
+            self.manual_interpretation_window = ManualInterpretationWindow(self.img, current_tab.filtered_image, self)
             self.manual_interpretation_window.show()
         else:
-            QMessageBox.warning(self, "Warning", "Please apply a filter first before using manual interpretation.")
+            QMessageBox.warning(self, "Warning", "Please load an image and apply a filter first before using manual interpretation.")
     def handle_tab_click(self, index):
         if self.tab_widget.tabText(index) == "+":
             filter_name, ok = QInputDialog.getText(self, "New Filter", "Enter filter name:")
