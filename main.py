@@ -135,6 +135,23 @@ class FilterTab(QWidget):
 
         layout.addLayout(image_layout)
 
+        # Gaussian filter controls
+        gaussian_layout = QHBoxLayout()
+        self.gaussian_checkbox = QCheckBox("Apply Gaussian Filter")
+        self.gaussian_checkbox.stateChanged.connect(self.update_filter)
+        gaussian_layout.addWidget(self.gaussian_checkbox)
+
+        self.gaussian_sigma = QSlider(Qt.Horizontal)
+        self.gaussian_sigma.setRange(1, 50)  # Sigma from 0.1 to 5.0
+        self.gaussian_sigma.setValue(10)  # Default value 1.0
+        self.gaussian_sigma.valueChanged.connect(self.update_filter)
+        gaussian_layout.addWidget(self.gaussian_sigma)
+
+        self.gaussian_sigma_label = QLabel("1.0")
+        gaussian_layout.addWidget(self.gaussian_sigma_label)
+
+        layout.addLayout(gaussian_layout)
+
         # Controls layout will be added by subclasses
         self.controls_layout = QVBoxLayout()
         layout.addLayout(self.controls_layout)
@@ -148,11 +165,6 @@ class FilterTab(QWidget):
         self.edge_link_button = QPushButton("Edge Link")
         self.edge_link_button.clicked.connect(self.open_edge_link_window)
         layout.addWidget(self.edge_link_button)
-
-        # Manual Interpretation button
-        self.manual_interpretation_button = QPushButton("Manual Interpretation")
-        self.manual_interpretation_button.clicked.connect(self.open_manual_interpretation)
-        layout.addWidget(self.manual_interpretation_button)
 
         self.setLayout(layout)
 
@@ -181,8 +193,23 @@ class FilterTab(QWidget):
         self.filtered_canvas.draw()
 
     def update_filter(self):
-        # To be implemented in subclasses
-        pass
+        if self.input_image is not None:
+            # Apply Gaussian filter if checkbox is checked
+            if self.gaussian_checkbox.isChecked():
+                sigma = self.gaussian_sigma.value() / 10.0  # Convert to float
+                self.gaussian_sigma_label.setText(f"{sigma:.1f}")
+                blurred_image = cv2.GaussianBlur(self.input_image, (0, 0), sigma)
+            else:
+                blurred_image = self.input_image
+
+            # Apply the specific filter (to be implemented in subclasses)
+            self.apply_filter(blurred_image)
+
+            # Apply skeletonization if checkbox is checked
+            if self.skeletonize_checkbox.isChecked():
+                self.filtered_image = self.apply_skeletonization(self.filtered_image)
+
+            self.show_filtered_image()
 
     def apply_skeletonization(self, image):
         return skeletonize(image > 0).astype(np.uint8) * 255
@@ -193,6 +220,12 @@ class FilterTab(QWidget):
         self.edge_link_window = EdgeLinkWindow(self.filtered_image, self.parent())
         self.edge_link_window.show()
 
+    def apply_filter(self, image):
+        # To be implemented in subclasses
+        pass
+
+    def apply_skeletonization(self, image):
+        return skeletonize(image > 0).astype(np.uint8) * 255
 class ManualInterpretationWindow(QDialog):
     def __init__(self, original_image, filtered_image, parent=None):
         super().__init__(parent)
@@ -457,19 +490,10 @@ class CannyFilterTab(FilterTab):
         self.controls_layout.addWidget(QLabel("Threshold 2"))
         self.controls_layout.addWidget(self.threshold2)
 
-        # Manual Interpretation button
-        self.manual_interpretation_button = QPushButton("Manual Interpretation")
-        self.manual_interpretation_button.clicked.connect(self.open_manual_interpretation)
-        self.controls_layout.addWidget(self.manual_interpretation_button)
+        # Manual #
 
-    def update_filter(self):
-        if self.input_image is not None:
-            self.filtered_image = cv2.Canny(self.input_image,
-                                            self.threshold1.value(),
-                                            self.threshold2.value())
-            if self.skeletonize_checkbox.isChecked():
-                self.filtered_image = self.apply_skeletonization(self.filtered_image)
-            self.show_filtered_image()
+    def apply_filter(self, image):
+        self.filtered_image = cv2.Canny(image, self.threshold1.value(), self.threshold2.value())
 
     def open_manual_interpretation(self):
         if self.filtered_image is not None:
@@ -492,23 +516,16 @@ class SobelFilterTab(FilterTab):
         self.controls_layout.addWidget(QLabel("Kernel Size"))
         self.controls_layout.addWidget(self.ksize)
 
-        # Manual Interpretation button
-        self.manual_interpretation_button = QPushButton("Manual Interpretation")
-        self.manual_interpretation_button.clicked.connect(self.open_manual_interpretation)
-        self.controls_layout.addWidget(self.manual_interpretation_button)
+        # #
 
-    def update_filter(self):
-        if self.input_image is not None:
-            ksize = self.ksize.value()
-            if ksize % 2 == 0:
-                ksize += 1
-            grad_x = cv2.Sobel(self.input_image, cv2.CV_64F, 1, 0, ksize=ksize)
-            grad_y = cv2.Sobel(self.input_image, cv2.CV_64F, 0, 1, ksize=ksize)
-            self.filtered_image = cv2.addWeighted(cv2.convertScaleAbs(grad_x), 0.5,
-                                                  cv2.convertScaleAbs(grad_y), 0.5, 0)
-            if self.skeletonize_checkbox.isChecked():
-                self.filtered_image = self.apply_skeletonization(self.filtered_image)
-            self.show_filtered_image()
+    def apply_filter(self, image):
+        ksize = self.ksize.value()
+        if ksize % 2 == 0:
+            ksize += 1
+        grad_x = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=ksize)
+        grad_y = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=ksize)
+        self.filtered_image = cv2.addWeighted(cv2.convertScaleAbs(grad_x), 0.5,
+                                              cv2.convertScaleAbs(grad_y), 0.5, 0)
 
     def open_manual_interpretation(self):
         if self.filtered_image is not None:
@@ -531,23 +548,18 @@ class ShearletFilterTab(FilterTab):
         self.controls_layout.addWidget(QLabel("Min Contrast"))
         self.controls_layout.addWidget(self.min_contrast)
 
-        # Manual Interpretation button
-        self.manual_interpretation_button = QPushButton("Manual Interpretation")
-        self.manual_interpretation_button.clicked.connect(self.open_manual_interpretation)
-        self.controls_layout.addWidget(self.manual_interpretation_button)
+        ##
 
     def set_input_image(self, image):
         super().set_input_image(image)
         self.shearlet_system = EdgeSystem(*image.shape)
 
-    def update_filter(self):
-        if self.input_image is not None and self.shearlet_system is not None:
-            edges, _ = self.shearlet_system.detect(self.input_image,
-                                                   min_contrast=self.min_contrast.value())
+    def apply_filter(self, image):
+        if self.shearlet_system is not None:
+            edges, _ = self.shearlet_system.detect(image, min_contrast=self.min_contrast.value())
             self.filtered_image = (edges * 255).astype(np.uint8)
-            if self.skeletonize_checkbox.isChecked():
-                self.filtered_image = self.apply_skeletonization(self.filtered_image)
-            self.show_filtered_image()
+        else:
+            self.filtered_image = image.copy()
 
     def open_manual_interpretation(self):
         if self.filtered_image is not None:
@@ -635,176 +647,6 @@ class EdgeLinkWindow(QDialog):
         ax.axis('off')
         self.canvas.draw()
 
-
-class FilterTab(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.input_image = None
-        self.filtered_image = None
-        self.edge_linked_image = None
-        self.initUI()
-
-    def initUI(self):
-        layout = QVBoxLayout()
-
-        image_layout = QHBoxLayout()
-
-        # Input image
-        self.input_figure = Figure(figsize=(5, 5))
-        self.input_canvas = FigureCanvas(self.input_figure)
-
-        # Filtered image
-        self.filtered_figure = Figure(figsize=(5, 5))
-        self.filtered_canvas = FigureCanvas(self.filtered_figure)
-
-        image_layout.addWidget(self.input_canvas)
-        image_layout.addWidget(self.filtered_canvas)
-
-        layout.addLayout(image_layout)
-
-        # Controls layout will be added by subclasses
-        self.controls_layout = QVBoxLayout()
-        layout.addLayout(self.controls_layout)
-
-        # Skeletonization checkbox
-        self.skeletonize_checkbox = QCheckBox("Apply Skeletonization")
-        self.skeletonize_checkbox.stateChanged.connect(self.update_filter)
-        layout.addWidget(self.skeletonize_checkbox)
-
-        # Edge Link button
-        self.edge_link_button = QPushButton("Edge Link")
-        self.edge_link_button.clicked.connect(self.open_edge_link_window)
-        layout.addWidget(self.edge_link_button)
-
-        self.setLayout(layout)
-
-    def set_input_image(self, image):
-        self.input_image = image
-        self.show_input_image()
-        self.update_filter()
-
-    def show_input_image(self):
-        self.input_figure.clear()
-        ax = self.input_figure.add_subplot(111)
-        ax.imshow(self.input_image, cmap='gray')
-        ax.axis('off')
-        self.input_canvas.draw()
-
-    def show_filtered_image(self):
-        self.filtered_figure.clear()
-        ax = self.filtered_figure.add_subplot(111)
-        ax.imshow(self.filtered_image, cmap='gray')
-        ax.axis('off')
-        self.filtered_canvas.draw()
-
-    def update_filter(self):
-        # To be implemented in subclasses
-        pass
-
-    def apply_skeletonization(self, image):
-        return skeletonize(image > 0).astype(np.uint8) * 255
-
-    def open_edge_link_window(self):
-        if self.filtered_image is None:
-            return
-        self.edge_link_window = EdgeLinkWindow(self.filtered_image, self.parent())
-        self.edge_link_window.show()
-
-    def open_manual_interpretation(self):
-        if self.filtered_image is not None:
-            self.manual_interpretation_window = ManualInterpretationWindow(self.filtered_image, self.parent())
-            self.manual_interpretation_window.show()
-
-class CannyFilterTab(FilterTab):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setup_controls()
-
-    def setup_controls(self):
-        # Threshold sliders
-        self.threshold1 = QSlider(Qt.Horizontal)
-        self.threshold1.setRange(0, 255)
-        self.threshold1.setValue(50)
-        self.threshold1.valueChanged.connect(self.update_filter)
-
-        self.threshold2 = QSlider(Qt.Horizontal)
-        self.threshold2.setRange(0, 255)
-        self.threshold2.setValue(150)
-        self.threshold2.valueChanged.connect(self.update_filter)
-
-        self.controls_layout.addWidget(QLabel("Threshold 1"))
-        self.controls_layout.addWidget(self.threshold1)
-        self.controls_layout.addWidget(QLabel("Threshold 2"))
-        self.controls_layout.addWidget(self.threshold2)
-
-    def update_filter(self):
-        if self.input_image is not None:
-            self.filtered_image = cv2.Canny(self.input_image,
-                                            self.threshold1.value(),
-                                            self.threshold2.value())
-            if self.skeletonize_checkbox.isChecked():
-                self.filtered_image = self.apply_skeletonization(self.filtered_image)
-            self.show_filtered_image()
-
-
-class SobelFilterTab(FilterTab):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setup_controls()
-
-    def setup_controls(self):
-        # Kernel size slider
-        self.ksize = QSlider(Qt.Horizontal)
-        self.ksize.setRange(1, 31)
-        self.ksize.setValue(3)
-        self.ksize.setSingleStep(2)
-        self.ksize.valueChanged.connect(self.update_filter)
-
-        self.controls_layout.addWidget(QLabel("Kernel Size"))
-        self.controls_layout.addWidget(self.ksize)
-
-    def update_filter(self):
-        if self.input_image is not None:
-            ksize = self.ksize.value()
-            if ksize % 2 == 0:
-                ksize += 1
-            grad_x = cv2.Sobel(self.input_image, cv2.CV_64F, 1, 0, ksize=ksize)
-            grad_y = cv2.Sobel(self.input_image, cv2.CV_64F, 0, 1, ksize=ksize)
-            self.filtered_image = cv2.addWeighted(cv2.convertScaleAbs(grad_x), 0.5,
-                                                  cv2.convertScaleAbs(grad_y), 0.5, 0)
-            if self.skeletonize_checkbox.isChecked():
-                self.filtered_image = self.apply_skeletonization(self.filtered_image)
-            self.show_filtered_image()
-
-
-class ShearletFilterTab(FilterTab):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.shearlet_system = None
-        self.setup_controls()
-
-    def setup_controls(self):
-        # Min contrast slider
-        self.min_contrast = QSlider(Qt.Horizontal)
-        self.min_contrast.setRange(0, 100)
-        self.min_contrast.setValue(10)
-        self.min_contrast.valueChanged.connect(self.update_filter)
-
-        self.controls_layout.addWidget(QLabel("Min Contrast"))
-        self.controls_layout.addWidget(self.min_contrast)
-
-    def set_input_image(self, image):
-        super().set_input_image(image)
-        self.shearlet_system = EdgeSystem(*image.shape)
-
-    def update_filter(self):
-        if self.input_image is not None and self.shearlet_system is not None:
-            edges, _ = self.shearlet_system.detect(self.input_image,
-                                                   min_contrast=self.min_contrast.value())
-            self.filtered_image = (edges * 255).astype(np.uint8)
-            if self.skeletonize_checkbox.isChecked():
-                self.filtered_image = self.apply_skeletonization(self.filtered_image)
-            self.show_filtered_image()
 
 
 class EdgeLinkWindow(QDialog):
@@ -2163,41 +2005,76 @@ class MyWindow(QMainWindow):
         self.img = None
         self.mask = None
         self.filtered_img = None
-        self.figure_before.clear()
-        self.canvas_before.draw()
-        self.figure_canny.clear()
-        self.canvas_canny.draw()
-        self.figure_sobel.clear()
-        self.canvas_sobel.draw()
-        self.figure_manual.clear()
-        self.canvas_manual.draw()
-        self.saveButton.setEnabled(False)
+        self.shearlet_system = None
+
+        # Clear all filter tabs
+        for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
+            tab = self.tab_widget.widget(i)
+            if isinstance(tab, FilterTab):
+                tab.input_image = None
+                tab.filtered_image = None
+                tab.show_input_image()
+                tab.show_filtered_image()
+
+        # Disable buttons that require an image
+        self.manual_interpretation_button.setEnabled(False)
+        self.clean_edges_button.setEnabled(False)
+
+        QMessageBox.information(self, "New Project", "New project created. Please load an image.")
 
     def open_project(self):
-        file_path = QFileDialog.getOpenFileName(self, "Open Project File", "", "Project Files (*.pkl);;All Files (*)")[0]
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open Project File", "",
+                                                   "Project Files (*.pkl);;All Files (*)")
         if file_path:
-            with open(file_path, 'rb') as file:
-                project_data = pickle.load(file)
-                self.img = project_data['image']
-                self.mask = project_data['mask']
-                self.filtered_img = project_data['filtered_image']
-                self.show_original_image()
-                self.apply_canny_filter()
-                self.apply_sobel_filter()
-                self.show_manual_interpretation()
-                self.saveButton.setEnabled(True)
+            try:
+                with open(file_path, 'rb') as file:
+                    project_data = pickle.load(file)
+                    self.img = project_data['image']
+                    self.mask = project_data.get('mask')
+                    self.filtered_img = project_data.get('filtered_image')
+
+                    # Update all filter tabs with the new image
+                    for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
+                        tab = self.tab_widget.widget(i)
+                        if isinstance(tab, FilterTab):
+                            tab.set_input_image(self.img)
+                            tab.update_filter()
+
+                    # Enable buttons that require an image
+                    self.manual_interpretation_button.setEnabled(True)
+                    self.clean_edges_button.setEnabled(True)
+
+                QMessageBox.information(self, "Project Opened", "Project loaded successfully.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to open project: {str(e)}")
 
     def save_project(self):
-        if self.img is not None:
-            file_path = QFileDialog.getSaveFileName(self, "Save Project File", "", "Project Files (*.pkl);;All Files (*)")[0]
-            if file_path:
+        if self.img is None:
+            QMessageBox.warning(self, "Error", "No image loaded. Cannot save project.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Project File", "", "Project Files (*.pkl);;All Files (*)")
+        if file_path:
+            try:
                 project_data = {
                     'image': self.img,
                     'mask': self.mask,
                     'filtered_image': self.filtered_img
                 }
+
+                # Save filter-specific data
+                for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
+                    tab = self.tab_widget.widget(i)
+                    if isinstance(tab, FilterTab):
+                        filter_name = self.tab_widget.tabText(i)
+                        project_data[f'{filter_name}_filtered'] = tab.filtered_image
+
                 with open(file_path, 'wb') as file:
                     pickle.dump(project_data, file)
+
+                QMessageBox.information(self, "Project Saved", "Project saved successfully.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save project: {str(e)}")
 
     def open_image_properties_dialog(self):
         if self.img is not None:
@@ -2569,6 +2446,14 @@ class MyWindow(QMainWindow):
                     tab = self.tab_widget.widget(i)
                     if isinstance(tab, FilterTab):
                         tab.set_input_image(self.img)
+
+                # Enable buttons that require an image
+                self.manual_interpretation_button.setEnabled(True)
+                self.clean_edges_button.setEnabled(True)
+
+                QMessageBox.information(self, "Image Loaded", "Image loaded successfully.")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to load image.")
 
     def clean_short_edges(self):
         current_tab = self.tab_widget.currentWidget()
