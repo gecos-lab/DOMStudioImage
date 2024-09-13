@@ -149,7 +149,17 @@ class FilterTab(QWidget):
         self.edge_link_button.clicked.connect(self.open_edge_link_window)
         layout.addWidget(self.edge_link_button)
 
+        # Manual Interpretation button
+        self.manual_interpretation_button = QPushButton("Manual Interpretation")
+        self.manual_interpretation_button.clicked.connect(self.open_manual_interpretation)
+        layout.addWidget(self.manual_interpretation_button)
+
         self.setLayout(layout)
+
+    def open_manual_interpretation(self):
+        if self.filtered_image is not None:
+            self.manual_interpretation_window = ManualInterpretationWindow(self.filtered_image, self.parent())
+            self.manual_interpretation_window.show()
 
     def set_input_image(self, image):
         self.input_image = image
@@ -183,7 +193,170 @@ class FilterTab(QWidget):
         self.edge_link_window = EdgeLinkWindow(self.filtered_image, self.parent())
         self.edge_link_window.show()
 
+class ManualInterpretationWindow(QDialog):
+    def __init__(self, image, parent=None):
+        super().__init__(parent)
+        self.image = image
+        self.lines = []
+        self.current_line = []
+        self.is_drawing = False
+        self.is_semi_auto = False
+        self.is_edit_mode = False
+        self.semi_auto_start_point = None
+        self.initUI()
 
+    def initUI(self):
+        self.setWindowTitle('Manual Interpretation')
+        self.setGeometry(100, 100, 800, 600)
+
+        layout = QVBoxLayout()
+
+        self.figure = Figure(figsize=(8, 6))
+        self.canvas = FigureCanvas(self.figure)
+        self.toolbar = NavigationToolbar(self.canvas, self)
+
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas)
+
+        self.toggle_drawing_button = QPushButton("Enable Manual Drawing")
+        self.toggle_drawing_button.clicked.connect(self.toggle_drawing)
+        layout.addWidget(self.toggle_drawing_button)
+
+        self.toggle_semi_auto_button = QPushButton("Enable Semi-Auto Drawing")
+        self.toggle_semi_auto_button.clicked.connect(self.toggle_semi_auto)
+        layout.addWidget(self.toggle_semi_auto_button)
+
+        self.edit_mode_button = QPushButton("Enter Edit Mode")
+        self.edit_mode_button.clicked.connect(self.toggle_edit_mode)
+        layout.addWidget(self.edit_mode_button)
+
+        self.setLayout(layout)
+
+        self.canvas.mpl_connect("button_press_event", self.on_canvas_click)
+        self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
+        self.canvas.mpl_connect("button_release_event", self.on_mouse_release)
+
+        self.show_image()
+
+    def show_image(self):
+        self.figure.clear()
+        self.ax = self.figure.add_subplot(111)
+        self.ax.imshow(self.image, cmap='gray')
+        self.ax.axis('off')
+        self.canvas.draw()
+
+    def toggle_drawing(self):
+        self.is_drawing = not self.is_drawing
+        self.is_semi_auto = False
+        self.is_edit_mode = False
+        self.semi_auto_start_point = None
+        self.toggle_drawing_button.setText("Disable Manual Drawing" if self.is_drawing else "Enable Manual Drawing")
+        self.toggle_semi_auto_button.setText("Enable Semi-Auto Drawing")
+        self.edit_mode_button.setText("Enter Edit Mode")
+
+    def toggle_semi_auto(self):
+        self.is_semi_auto = not self.is_semi_auto
+        self.is_drawing = False
+        self.is_edit_mode = False
+        self.semi_auto_start_point = None
+        self.toggle_semi_auto_button.setText("Disable Semi-Auto Drawing" if self.is_semi_auto else "Enable Semi-Auto Drawing")
+        self.toggle_drawing_button.setText("Enable Manual Drawing")
+        self.edit_mode_button.setText("Enter Edit Mode")
+
+    def toggle_edit_mode(self):
+        self.is_edit_mode = not self.is_edit_mode
+        self.is_drawing = False
+        self.is_semi_auto = False
+        if self.is_edit_mode:
+            self.toggle_drawing_button.setEnabled(False)
+            self.toggle_semi_auto_button.setEnabled(False)
+            self.edit_mode_button.setText("Exit Edit Mode")
+            QMessageBox.information(self, "Edit Mode", "Click near a line point to edit. Click 'Exit Edit Mode' when done.")
+        else:
+            self.toggle_drawing_button.setEnabled(True)
+            self.toggle_semi_auto_button.setEnabled(True)
+            self.edit_mode_button.setText("Enter Edit Mode")
+
+    def on_canvas_click(self, event):
+        if event.inaxes != self.ax:
+            return
+
+        x, y = int(event.xdata), int(event.ydata)
+
+        if self.is_drawing:
+            if event.button == 1:  # Left click
+                if not self.current_line:
+                    self.current_line = [(x, y)]
+                else:
+                    self.current_line.append((x, y))
+                    self.draw_lines()
+            elif event.button == 3:  # Right click
+                if self.current_line:
+                    self.lines.append(self.current_line)
+                    self.current_line = []
+                    self.draw_lines()
+        elif self.is_semi_auto:
+            if not self.semi_auto_start_point:
+                self.semi_auto_start_point = (x, y)
+                QMessageBox.information(self, "Semi-Auto Drawing", "Start point set. Click again to set end point.")
+            else:
+                end_point = (x, y)
+                self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
+                self.semi_auto_start_point = None
+        elif self.is_edit_mode:
+            self.edit_nearest_point(x, y)
+
+    def on_mouse_move(self, event):
+        if not self.is_drawing or not self.current_line or event.inaxes != self.ax:
+            return
+
+        x, y = int(event.xdata), int(event.ydata)
+        temp_line = self.current_line + [(x, y)]
+        self.draw_lines(temp_line)
+
+    def on_mouse_release(self, event):
+        if self.is_drawing and event.button == 1 and self.current_line:  # Left click release
+            x, y = int(event.xdata), int(event.ydata)
+            self.current_line.append((x, y))
+            self.draw_lines()
+
+    def draw_lines(self, temp_line=None):
+        self.show_image()
+        for line in self.lines:
+            if line and len(line) > 1:
+                x, y = zip(*line)
+                self.ax.plot(x, y, 'r-')
+        if self.current_line and len(self.current_line) > 1:
+            x, y = zip(*self.current_line)
+            self.ax.plot(x, y, 'r-')
+        if temp_line and len(temp_line) > 1:
+            x, y = zip(*temp_line)
+            self.ax.plot(x, y, 'r--')
+        self.canvas.draw()
+
+    def semi_automatic_tracking(self, start_point, end_point):
+        # Implement semi-automatic tracking here
+        # This is a placeholder implementation
+        tracked_line = [start_point, end_point]
+        self.lines.append(tracked_line)
+        self.draw_lines()
+
+    def edit_nearest_point(self, x, y):
+        min_distance = float('inf')
+        nearest_line = None
+        nearest_point_index = None
+
+        for i, line in enumerate(self.lines):
+            for j, point in enumerate(line):
+                distance = np.sqrt((x - point[0])**2 + (y - point[1])**2)
+                if distance < min_distance:
+                    min_distance = distance
+                    nearest_line = i
+                    nearest_point_index = j
+
+        if nearest_line is not None and min_distance < 10:  # Threshold for selection
+            self.lines[nearest_line][nearest_point_index] = (x, y)
+            self.draw_lines()
 class CannyFilterTab(FilterTab):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -206,6 +379,11 @@ class CannyFilterTab(FilterTab):
         self.controls_layout.addWidget(QLabel("Threshold 2"))
         self.controls_layout.addWidget(self.threshold2)
 
+        # Manual Interpretation button
+        self.manual_interpretation_button = QPushButton("Manual Interpretation")
+        self.manual_interpretation_button.clicked.connect(self.open_manual_interpretation)
+        self.controls_layout.addWidget(self.manual_interpretation_button)
+
     def update_filter(self):
         if self.input_image is not None:
             self.filtered_image = cv2.Canny(self.input_image,
@@ -215,6 +393,10 @@ class CannyFilterTab(FilterTab):
                 self.filtered_image = self.apply_skeletonization(self.filtered_image)
             self.show_filtered_image()
 
+    def open_manual_interpretation(self):
+        if self.filtered_image is not None:
+            self.manual_interpretation_window = ManualInterpretationWindow(self.filtered_image, self.parent())
+            self.manual_interpretation_window.show()
 
 class SobelFilterTab(FilterTab):
     def __init__(self, parent=None):
@@ -232,6 +414,11 @@ class SobelFilterTab(FilterTab):
         self.controls_layout.addWidget(QLabel("Kernel Size"))
         self.controls_layout.addWidget(self.ksize)
 
+        # Manual Interpretation button
+        self.manual_interpretation_button = QPushButton("Manual Interpretation")
+        self.manual_interpretation_button.clicked.connect(self.open_manual_interpretation)
+        self.controls_layout.addWidget(self.manual_interpretation_button)
+
     def update_filter(self):
         if self.input_image is not None:
             ksize = self.ksize.value()
@@ -245,6 +432,10 @@ class SobelFilterTab(FilterTab):
                 self.filtered_image = self.apply_skeletonization(self.filtered_image)
             self.show_filtered_image()
 
+    def open_manual_interpretation(self):
+        if self.filtered_image is not None:
+            self.manual_interpretation_window = ManualInterpretationWindow(self.filtered_image, self.parent())
+            self.manual_interpretation_window.show()
 
 class ShearletFilterTab(FilterTab):
     def __init__(self, parent=None):
@@ -262,6 +453,11 @@ class ShearletFilterTab(FilterTab):
         self.controls_layout.addWidget(QLabel("Min Contrast"))
         self.controls_layout.addWidget(self.min_contrast)
 
+        # Manual Interpretation button
+        self.manual_interpretation_button = QPushButton("Manual Interpretation")
+        self.manual_interpretation_button.clicked.connect(self.open_manual_interpretation)
+        self.controls_layout.addWidget(self.manual_interpretation_button)
+
     def set_input_image(self, image):
         super().set_input_image(image)
         self.shearlet_system = EdgeSystem(*image.shape)
@@ -275,7 +471,10 @@ class ShearletFilterTab(FilterTab):
                 self.filtered_image = self.apply_skeletonization(self.filtered_image)
             self.show_filtered_image()
 
-
+    def open_manual_interpretation(self):
+        if self.filtered_image is not None:
+            self.manual_interpretation_window = ManualInterpretationWindow(self.filtered_image, self.parent())
+            self.manual_interpretation_window.show()
 class EdgeLinkWindow(QDialog):
     def __init__(self, image, parent=None):
         super().__init__(parent)
@@ -433,6 +632,10 @@ class FilterTab(QWidget):
         self.edge_link_window = EdgeLinkWindow(self.filtered_image, self.parent())
         self.edge_link_window.show()
 
+    def open_manual_interpretation(self):
+        if self.filtered_image is not None:
+            self.manual_interpretation_window = ManualInterpretationWindow(self.filtered_image, self.parent())
+            self.manual_interpretation_window.show()
 
 class CannyFilterTab(FilterTab):
     def __init__(self, parent=None):
@@ -1599,6 +1802,11 @@ class MyWindow(QMainWindow):
         self.clean_edges_button.clicked.connect(self.clean_short_edges)
         main_layout.addWidget(self.clean_edges_button)
 
+        # Manual Interpretation button
+        self.manual_interpretation_button = QPushButton("Manual Interpretation")
+        self.manual_interpretation_button.clicked.connect(self.open_manual_interpretation)
+        main_layout.addWidget(self.manual_interpretation_button)
+
         self.createMenus()
 
     def add_filter_tab(self, filter_name):
@@ -1609,11 +1817,17 @@ class MyWindow(QMainWindow):
         elif filter_name == "Shearlet":
             tab = ShearletFilterTab(self)
         else:
-            # For custom filters, you can create a generic FilterTab
             tab = FilterTab(self)
 
         self.tab_widget.insertTab(self.tab_widget.count() - 1, tab, filter_name)
 
+    def open_manual_interpretation(self):
+        current_tab = self.tab_widget.currentWidget()
+        if isinstance(current_tab, FilterTab) and current_tab.filtered_image is not None:
+            self.manual_interpretation_window = ManualInterpretationWindow(current_tab.filtered_image, self)
+            self.manual_interpretation_window.show()
+        else:
+            QMessageBox.warning(self, "Warning", "Please apply a filter first before using manual interpretation.")
     def handle_tab_click(self, index):
         if self.tab_widget.tabText(index) == "+":
             filter_name, ok = QInputDialog.getText(self, "New Filter", "Enter filter name:")
