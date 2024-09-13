@@ -980,7 +980,7 @@ class EdgeLinkWindow(QDialog):
             processed_edges.append(np.array(new_edge))
         return processed_edges
 class PrecisionRecallDialog(QDialog):
-    def __init__(self, parent=None, canny_data=None, sobel_data=None, shearlet_data=None):
+    def __init__(self, parent=None, **filter_data):
         super().__init__(parent)
         self.setWindowTitle("Precision and Recall Metrics")
         self.setGeometry(100, 100, 800, 600)
@@ -999,12 +999,12 @@ class PrecisionRecallDialog(QDialog):
 
         self.setLayout(layout)
 
-        self.plot_data(canny_data, sobel_data, shearlet_data)
+        self.plot_data(filter_data)
 
-    def plot_data(self, canny_data, sobel_data, shearlet_data):
-        filters = ['Canny', 'Sobel', 'Shearlet']
-        precisions = [canny_data['precision'], sobel_data['precision'], shearlet_data['precision']]
-        recalls = [canny_data['recall'], sobel_data['recall'], shearlet_data['recall']]
+    def plot_data(self, filter_data):
+        filters = list(filter_data.keys())
+        precisions = [data['precision'] for data in filter_data.values()]
+        recalls = [data['recall'] for data in filter_data.values()]
 
         # Precision plot
         self.ax1.bar(filters, precisions, color=['blue', 'green', 'red'], alpha=0.7)
@@ -1022,18 +1022,18 @@ class PrecisionRecallDialog(QDialog):
         self.canvas.draw()
 
         # Update text area with detailed information
-        text = f"""Canny Filter (low={canny_data['low']}, high={canny_data['high']}):
-Precision: {canny_data['precision']:.4f}
-Recall: {canny_data['recall']:.4f}
-
-Sobel Filter (ksize={sobel_data['ksize']}):
-Precision: {sobel_data['precision']:.4f}
-Recall: {sobel_data['recall']:.4f}
-
-Shearlet Filter (min_contrast={shearlet_data['min_contrast']}):
-Precision: {shearlet_data['precision']:.4f}
-Recall: {shearlet_data['recall']:.4f}
-"""
+        text = ""
+        for filter_name, data in filter_data.items():
+            text += f"{filter_name} Filter:\n"
+            text += f"Precision: {data['precision']:.4f}\n"
+            text += f"Recall: {data['recall']:.4f}\n"
+            if 'low' in data and 'high' in data:
+                text += f"Thresholds: low={data['low']}, high={data['high']}\n"
+            elif 'ksize' in data:
+                text += f"Kernel Size: {data['ksize']}\n"
+            elif 'min_contrast' in data:
+                text += f"Min Contrast: {data['min_contrast']}\n"
+            text += "\n"
         self.text_area.setText(text)
         
 class BatchProcessDialog(QDialog):
@@ -1930,30 +1930,36 @@ class MyWindow(QMainWindow):
             self.apply_sobel_filter()
             self.apply_shearlet_filter()
             self.show_manual_interpretation()
+
     def process_batch_files(self, input_files, output_dir, filter_type):
+        # Find the correct filter tab
+        filter_tab = None
+        for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
+            tab = self.tab_widget.widget(i)
+            if isinstance(tab, FilterTab) and self.tab_widget.tabText(i) == filter_type:
+                filter_tab = tab
+                break
+
+        if filter_tab is None:
+            QMessageBox.warning(self, "Error", f"Filter {filter_type} not found.")
+            return
+
         for input_file in input_files:
             img = cv2.imread(input_file, cv2.IMREAD_GRAYSCALE)
             if img is None:
                 continue
 
-            if filter_type == "Canny":
-                processed = cv2.Canny(img, self.cannyThreshold1.value(), self.cannyThreshold2.value())
-            elif filter_type == "Sobel":
-                ksize = self.sobelKsize.value()
-                if ksize % 2 == 0:
-                    ksize += 1
-                grad_x = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=ksize)
-                grad_y = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=ksize)
-                processed = np.sqrt(grad_x**2 + grad_y**2)
-                processed = (processed / processed.max() * 255).astype(np.uint8)
-            elif filter_type == "Shearlet":
-                edges, _ = self.shearlet_system.detect(img, min_contrast=self.shearletMinContrast.value())
-                processed = (edges * 255).astype(np.uint8)
+            # Apply the filter
+            filter_tab.set_input_image(img)
+            filter_tab.update_filter()
+            processed = filter_tab.filtered_image
 
-            output_filename = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(input_file))[0]}_{filter_type}.png")
+            output_filename = os.path.join(output_dir,
+                                           f"{os.path.splitext(os.path.basename(input_file))[0]}_{filter_type}.png")
             cv2.imwrite(output_filename, processed)
 
-        QMessageBox.information(self, "Batch Process Complete", f"Processed {len(input_files)} images with {filter_type} filter.")
+        QMessageBox.information(self, "Batch Process Complete",
+                                f"Processed {len(input_files)} images with {filter_type} filter.")
 
     def createMenus(self):
         menubar = self.menuBar()
@@ -2057,63 +2063,59 @@ class MyWindow(QMainWindow):
         if self.img is None:
             QMessageBox.warning(self, "Error", "Please load an image first.")
             return
-        
+
         # Ask user to select a manual interpretation mask
-        mask_path, _ = QFileDialog.getOpenFileName(self, "Select Manual Interpretation Mask", "", "Image Files (*.png *.jpg *.bmp)")
+        mask_path, _ = QFileDialog.getOpenFileName(self, "Select Manual Interpretation Mask", "",
+                                                   "Image Files (*.png *.jpg *.bmp)")
         if not mask_path:
             return
-        
+
         # Load and preprocess the mask
         manual_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         manual_mask = cv2.resize(manual_mask, (self.img.shape[1], self.img.shape[0]))
         manual_mask = (manual_mask > 128).astype(np.uint8)  # Binarize the mask
-        
-        # Calculate for Canny
-        canny_low = self.cannyThreshold1.value()
-        canny_high = self.cannyThreshold2.value()
-        canny_edges = cv2.Canny(self.img, canny_low, canny_high)
-        canny_precision, canny_recall = self.calculate_precision_recall(manual_mask, canny_edges)
-        
-        # Calculate for Sobel
-        ksize = self.sobelKsize.value()
-        if ksize % 2 == 0:
-            ksize += 1
-        grad_x = cv2.Sobel(self.img, cv2.CV_64F, 1, 0, ksize=ksize)
-        grad_y = cv2.Sobel(self.img, cv2.CV_64F, 0, 1, ksize=ksize)
-        sobel = np.sqrt(grad_x**2 + grad_y**2)
-        sobel = (sobel / sobel.max() * 255).astype(np.uint8)
-        _, sobel_binary = cv2.threshold(sobel, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        sobel_precision, sobel_recall = self.calculate_precision_recall(manual_mask, sobel_binary)
-        
-        # Calculate for Shearlet
-        edges, _ = self.shearlet_system.detect(self.img, min_contrast=self.shearletMinContrast.value())
-        shearlet_edges = (edges * 255).astype(np.uint8)
-        _, shearlet_binary = cv2.threshold(shearlet_edges, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        shearlet_precision, shearlet_recall = self.calculate_precision_recall(manual_mask, shearlet_binary)
-        
-        # Prepare data for visualization
-        canny_data = {'precision': canny_precision, 'recall': canny_recall, 'low': canny_low, 'high': canny_high}
-        sobel_data = {'precision': sobel_precision, 'recall': sobel_recall, 'ksize': ksize}
-        shearlet_data = {'precision': shearlet_precision, 'recall': shearlet_recall, 'min_contrast': self.shearletMinContrast.value()}
-        
+
+        # Calculate for each filter
+        filter_data = {}
+        for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
+            tab = self.tab_widget.widget(i)
+            if isinstance(tab, FilterTab) and tab.filtered_image is not None:
+                filter_name = self.tab_widget.tabText(i)
+
+                # Resize the filtered image to match the manual mask
+                resized_filtered_image = cv2.resize(tab.filtered_image, (manual_mask.shape[1], manual_mask.shape[0]))
+
+                precision, recall = self.calculate_precision_recall(manual_mask, resized_filtered_image)
+                filter_data[filter_name] = {
+                    'precision': precision,
+                    'recall': recall
+                }
+
+                # Add specific filter parameters
+                if isinstance(tab, CannyFilterTab):
+                    filter_data[filter_name]['low'] = tab.threshold1.value()
+                    filter_data[filter_name]['high'] = tab.threshold2.value()
+                elif isinstance(tab, SobelFilterTab):
+                    filter_data[filter_name]['ksize'] = tab.ksize.value()
+                elif isinstance(tab, ShearletFilterTab):
+                    filter_data[filter_name]['min_contrast'] = tab.min_contrast.value()
+
         # Show results in the new dialog
-        dialog = PrecisionRecallDialog(self, canny_data, sobel_data, shearlet_data)
+        dialog = PrecisionRecallDialog(self, **filter_data)
         dialog.exec_()
 
-        # Debug: Save intermediate results
-        cv2.imwrite('debug_canny.png', canny_edges)
-        cv2.imwrite('debug_sobel.png', sobel_binary)
-        cv2.imwrite('debug_shearlet.png', shearlet_binary)
-        cv2.imwrite('debug_manual_mask.png', manual_mask * 255)
-
     def calculate_precision_recall(self, ground_truth, prediction):
-        true_positives = np.sum(np.logical_and(prediction == 255, ground_truth == 1))
-        false_positives = np.sum(np.logical_and(prediction == 255, ground_truth == 0))
+        # Ensure both inputs are binary
+        ground_truth = (ground_truth > 0).astype(np.uint8)
+        prediction = (prediction > 0).astype(np.uint8)
+
+        true_positives = np.sum(np.logical_and(prediction == 1, ground_truth == 1))
+        false_positives = np.sum(np.logical_and(prediction == 1, ground_truth == 0))
         false_negatives = np.sum(np.logical_and(prediction == 0, ground_truth == 1))
-        
+
         precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
         recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
-        
+
         return precision, recall
         
     def show_edge_measurement(self):
@@ -2278,70 +2280,47 @@ class MyWindow(QMainWindow):
             import traceback
             traceback.print_exc()
             return []
+
     def export_to_shapefile(self):
-        print("Starting export_to_shapefile function")
         if self.img is None:
-            print("No image loaded")
             QMessageBox.warning(self, "Error", "No image loaded.")
             return
 
-        print("Opening ExportDialog")
         dialog = ExportDialog(self, "Shapefile")
         if dialog.exec_():
-            print("ExportDialog executed successfully")
             selected_filter = dialog.get_selected_filter()
-            print(f"Selected filter: {selected_filter}")
-            
-            print("Getting filtered image")
             filtered_image = self.get_filtered_image(selected_filter)
-            print(f"Filtered image shape: {filtered_image.shape}")
+
+            if filtered_image is None:
+                QMessageBox.warning(self, "Error", f"No filtered image available for {selected_filter}.")
+                return
 
             # Convert to binary
-            print("Converting to binary")
-            binary_method, ok = QInputDialog.getItem(self, "Binary Conversion", 
-                                                    "Select binary conversion method:",
-                                                    ["Otsu", "Adaptive"], 0, False)
+            binary_method, ok = QInputDialog.getItem(self, "Binary Conversion",
+                                                     "Select binary conversion method:",
+                                                     ["Otsu", "Adaptive"], 0, False)
             if ok and binary_method:
                 binary_image = self.convert_to_binary(filtered_image, method=binary_method.lower())
-                print(f"Binary conversion completed using {binary_method} method")
             else:
-                print("Binary conversion cancelled")
                 return
 
-            print("Converting binary image to lines")
             lines = self.image_to_lines(binary_image)
-            print(f"Number of lines: {len(lines)}")
-
             if not lines:
-                print("No lines detected")
-                QMessageBox.warning(self, "Warning", "No lines were detected in the image. The shapefile will not be created.")
+                QMessageBox.warning(self, "Warning",
+                                    "No lines were detected in the image. The shapefile will not be created.")
                 return
 
-            print("Creating GeoDataFrame")
             gdf = gpd.GeoDataFrame({'geometry': lines})
-            print(f"GeoDataFrame created with {len(gdf)} rows")
             if hasattr(self, 'geotiff_crs'):
-                print(f"Setting CRS: {self.geotiff_crs}")
                 gdf.crs = self.geotiff_crs
-            else:
-                print("No CRS information available")
 
-            print("Opening save file dialog")
             save_path, _ = QFileDialog.getSaveFileName(self, "Save Shapefile", "", "Shapefile (*.shp)")
             if save_path:
-                print(f"Save path selected: {save_path}")
                 try:
-                    print("Attempting to save shapefile")
                     gdf.to_file(save_path)
-                    print("Shapefile saved successfully")
                     QMessageBox.information(self, "Success", "Shapefile exported successfully")
                 except Exception as e:
-                    print(f"Error saving shapefile: {str(e)}")
                     QMessageBox.critical(self, "Error", f"Failed to save shapefile: {str(e)}")
-            else:
-                print("Save operation cancelled")
-
-        print("export_to_shapefile function completed")
 
     def convert_edges_to_lines(self, edges, simplification_tolerance=1.0):
         debug_print("Converting edges to SVG paths")
@@ -2430,48 +2409,35 @@ class MyWindow(QMainWindow):
             return None
 
     def export_to_vector(self):
-        debug_print("Starting export_to_vector")
-        try:
-            if self.img is None:
-                raise ValueError("No image loaded")
+        if self.img is None:
+            QMessageBox.warning(self, "Error", "No image loaded.")
+            return
 
-            dialog = ExportDialog(self, "Vector")
-            if not dialog.exec_():
-                debug_print("Export dialog cancelled")
-                return
-
+        dialog = ExportDialog(self, "Vector")
+        if dialog.exec_():
             selected_filter = dialog.get_selected_filter()
-            debug_print(f"Selected filter: {selected_filter}")
-
             filtered_image = self.get_filtered_image(selected_filter)
-            debug_print(f"Filtered image shape: {filtered_image.shape}")
+
+            if filtered_image is None:
+                QMessageBox.warning(self, "Error", f"No filtered image available for {selected_filter}.")
+                return
 
             paths = self.convert_edges_to_lines(filtered_image)
             if not paths:
-                raise ValueError("No valid paths were detected")
+                QMessageBox.warning(self, "Warning", "No valid paths were detected.")
+                return
 
             svg_content = self.create_vector_lines(paths)
             if not svg_content:
-                raise ValueError("Failed to create SVG content")
-
-            save_path, _ = QFileDialog.getSaveFileName(self, "Save Vector", "", "SVG Files (*.svg)")
-            if not save_path:
-                debug_print("Save operation cancelled")
+                QMessageBox.warning(self, "Error", "Failed to create SVG content.")
                 return
 
-            with open(save_path, 'w', encoding='utf-8') as f:
-                f.write(svg_content)
+            save_path, _ = QFileDialog.getSaveFileName(self, "Save Vector", "", "SVG Files (*.svg)")
+            if save_path:
+                with open(save_path, 'w', encoding='utf-8') as f:
+                    f.write(svg_content)
+                QMessageBox.information(self, "Success", "File saved as SVG")
 
-            debug_print(f"Saving to {save_path}")
-            QMessageBox.information(self, "Success", "File saved as SVG")
-            debug_print("Export completed successfully")
-
-        except Exception as e:
-            error_msg = f"Error in export_to_vector: {str(e)}"
-            debug_print(error_msg)
-            import traceback
-            traceback.print_exc()
-            QMessageBox.critical(self, "Error", error_msg)
     def export_to_png(self):
         if self.img is None:
             QMessageBox.warning(self, "Error", "No image loaded.")
@@ -2482,9 +2448,14 @@ class MyWindow(QMainWindow):
             selected_filter = dialog.get_selected_filter()
             filtered_image = self.get_filtered_image(selected_filter)
 
+            if filtered_image is None:
+                QMessageBox.warning(self, "Error", f"No filtered image available for {selected_filter}.")
+                return
+
             save_path, _ = QFileDialog.getSaveFileName(self, "Save PNG", "", "PNG Files (*.png)")
             if save_path:
                 cv2.imwrite(save_path, filtered_image)
+                QMessageBox.information(self, "Success", "Image saved as PNG")
 
     def export_to_jpeg(self):
         if self.img is None:
@@ -2496,16 +2467,20 @@ class MyWindow(QMainWindow):
             selected_filter = dialog.get_selected_filter()
             filtered_image = self.get_filtered_image(selected_filter)
 
+            if filtered_image is None:
+                QMessageBox.warning(self, "Error", f"No filtered image available for {selected_filter}.")
+                return
+
             save_path, _ = QFileDialog.getSaveFileName(self, "Save JPEG", "", "JPEG Files (*.jpg *.jpeg)")
             if save_path:
                 # JPEG doesn't support 16-bit depth, so we need to convert to 8-bit
                 if filtered_image.dtype != np.uint8:
                     filtered_image = cv2.normalize(filtered_image, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                
+
                 # If the image is grayscale, convert to RGB
                 if len(filtered_image.shape) == 2:
                     filtered_image = cv2.cvtColor(filtered_image, cv2.COLOR_GRAY2RGB)
-                
+
                 # Save the image with JPEG compression
                 cv2.imwrite(save_path, filtered_image, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
                 QMessageBox.information(self, "Success", "Image saved as JPEG")
@@ -2520,12 +2495,17 @@ class MyWindow(QMainWindow):
             selected_filter = dialog.get_selected_filter()
             filtered_image = self.get_filtered_image(selected_filter)
 
+            if filtered_image is None:
+                QMessageBox.warning(self, "Error", f"No filtered image available for {selected_filter}.")
+                return
+
             save_path, _ = QFileDialog.getSaveFileName(self, "Save TIFF", "", "TIFF Files (*.tif)")
             if save_path:
                 if hasattr(self, 'geotiff_transform') and hasattr(self, 'geotiff_projection'):
                     # Save as GeoTIFF with original coordinates
                     driver = gdal.GetDriverByName('GTiff')
-                    dataset = driver.Create(save_path, filtered_image.shape[1], filtered_image.shape[0], 1, gdal.GDT_Byte)
+                    dataset = driver.Create(save_path, filtered_image.shape[1], filtered_image.shape[0], 1,
+                                            gdal.GDT_Byte)
                     dataset.SetGeoTransform(self.geotiff_transform)
                     dataset.SetProjection(self.geotiff_projection)
                     dataset.GetRasterBand(1).WriteArray(filtered_image)
@@ -2533,15 +2513,14 @@ class MyWindow(QMainWindow):
                 else:
                     # Save as regular TIFF
                     cv2.imwrite(save_path, filtered_image)
+                QMessageBox.information(self, "Success", "Image saved as TIFF")
 
     def get_filtered_image(self, filter_name):
-        tab_index = self.tab_widget.indexOf(self.tab_widget.findChild(QWidget, filter_name))
-        if tab_index == -1:
-            return None
-
-        tab = self.tab_widget.widget(tab_index)
-        filtered_canvas = tab.findChildren(FigureCanvas)[1]  # The second FigureCanvas is for the filtered image
-        return filtered_canvas.figure.axes[0].get_images()[0].get_array()
+        for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
+            tab = self.tab_widget.widget(i)
+            if isinstance(tab, FilterTab) and self.tab_widget.tabText(i) == filter_name:
+                return tab.filtered_image
+        return None
 
     def get_filter_param(self, filter_name, param_name, default_value):
         tab_index = self.tab_widget.indexOf(self.tab_widget.findChild(QWidget, filter_name))
