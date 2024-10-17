@@ -435,7 +435,7 @@ class EdgeSystem(ShearletSystem):
         self.sampleWaveletOffOrigin = sampleWaveletOffOrigin
 
         self.n_shearlets = len(self.scales) * self.n_oris
-        self.shearlets = np.zeros((self.rows, self.cols, self.n_shearlets), dtype=np.complex_)
+        self.shearlets = np.zeros((self.rows, self.cols, self.n_shearlets), dtype=np.complex128)
 
         for j, scale in enumerate(self.scales):
             for ori in range(self.n_oris):
