@@ -168,11 +168,6 @@ class FilterTab(QWidget):
 
         self.setLayout(layout)
 
-    def open_manual_interpretation(self):
-        if self.filtered_image is not None:
-            self.manual_interpretation_window = ManualInterpretationWindow(self.filtered_image, self.parent())
-            self.manual_interpretation_window.show()
-
     def set_input_image(self, image):
         self.input_image = image
         self.show_input_image()
@@ -224,8 +219,6 @@ class FilterTab(QWidget):
         # To be implemented in subclasses
         pass
 
-    def apply_skeletonization(self, image):
-        return skeletonize(image > 0).astype(np.uint8) * 255
 class ManualInterpretationWindow(QDialog):
     def __init__(self, original_image, filtered_image, parent=None):
         super().__init__(parent)
@@ -355,19 +348,6 @@ class ManualInterpretationWindow(QDialog):
             self.current_line.append((x, y))
             self.draw_lines()
 
-    def draw_lines(self, temp_line=None):
-        self.show_image()
-        for line in self.lines:
-            if line and len(line) > 1:
-                x, y = zip(*line)
-                self.ax.plot(x, y, 'r-')
-        if self.current_line and len(self.current_line) > 1:
-            x, y = zip(*self.current_line)
-            self.ax.plot(x, y, 'r-')
-        if temp_line and len(temp_line) > 1:
-            x, y = zip(*temp_line)
-            self.ax.plot(x, y, 'r--')
-        self.canvas.draw()
 
     def semi_automatic_tracking(self, start_point, end_point):
         # Convert points to image coordinates
@@ -461,13 +441,6 @@ class ManualInterpretationWindow(QDialog):
             self.ax.plot(x, y, 'r--')
         self.canvas.draw()
 
-    def show_image(self):
-        self.figure.clear()
-        self.ax = self.figure.add_subplot(111)
-        self.ax.imshow(self.original_image, cmap='gray')
-        self.ax.imshow(self.edge_map, cmap='jet', alpha=0.3)  # Overlay edge map
-        self.ax.axis('off')
-        self.canvas.draw()
 class CannyFilterTab(FilterTab):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -632,9 +605,6 @@ class EdgeLinkWindow(QDialog):
 
         self.visualize_edge_lists(processed_edge_lists)
 
-    def post_process_edges(self, edge_lists, max_gap, min_angle):
-        # Implement post-processing logic here
-        return edge_lists
 
     def visualize_edge_lists(self, edge_lists):
         self.edge_linked_image = np.zeros(self.image.shape, dtype=np.uint8)
@@ -678,23 +648,6 @@ class EdgeLinkWindow(QDialog):
         self.edge_linked_image = self.original_edges.copy()
         self.update_view()
 
-    def post_process_edges(self, edge_lists, max_gap, min_angle):
-        processed_edges = []
-        for edge in edge_lists:
-            new_edge = [edge[0]]
-            for i in range(1, len(edge)):
-                if self.point_distance(new_edge[-1], edge[i]) <= max_gap:
-                    if len(new_edge) < 2 or self.angle_between_points(new_edge[-2], new_edge[-1], edge[i]) >= min_angle:
-                        new_edge.append(edge[i])
-                    else:
-                        processed_edges.append(new_edge)
-                        new_edge = [edge[i]]
-                else:
-                    processed_edges.append(new_edge)
-                    new_edge = [edge[i]]
-            processed_edges.append(new_edge)
-        return processed_edges
-
     def point_distance(self, p1, p2):
         return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
@@ -723,6 +676,7 @@ class EdgeLinkWindow(QDialog):
         ax.imshow(self.edge_linked_image, cmap='gray')
         ax.axis('off')
         self.canvas.draw()
+
     def post_process_edges(self, edge_lists, max_gap, min_angle):
         processed_edges = []
         for edge in edge_lists:
@@ -732,13 +686,17 @@ class EdgeLinkWindow(QDialog):
                     if len(new_edge) < 2 or self.angle_between_points(new_edge[-2], new_edge[-1], edge[i]) >= min_angle:
                         new_edge.append(edge[i])
                     else:
-                        processed_edges.append(np.array(new_edge))
+                        if len(new_edge) > 1:
+                            processed_edges.append(np.array(new_edge))
                         new_edge = [edge[i]]
                 else:
-                    processed_edges.append(np.array(new_edge))
+                    if len(new_edge) > 1:
+                        processed_edges.append(np.array(new_edge))
                     new_edge = [edge[i]]
-            processed_edges.append(np.array(new_edge))
+            if len(new_edge) > 1:
+                processed_edges.append(np.array(new_edge))
         return processed_edges
+
 class PrecisionRecallDialog(QDialog):
     def __init__(self, parent=None, **filter_data):
         super().__init__(parent)
@@ -1965,15 +1923,15 @@ class MyWindow(QMainWindow):
         self.skeletonizeIterations_label.setText(str(self.skeletonizeIterations.value()))
         self.apply_canny_filter()
 
-    # def apply_canny_filter(self):
-    #     if self.img is None:
-    #         return
-    #     threshold1 = self.cannyThreshold1.value()
-    #     threshold2 = self.cannyThreshold2.value()
-    #
-    #     edges = cv2.Canny(self.img, threshold1, threshold2)
-    #     edges = self.apply_skeletonize(edges)
-    #     self.show_canny_image(edges)
+    def apply_canny_filter(self):
+        if self.img is None:
+            return
+        threshold1 = self.cannyThreshold1.value()
+        threshold2 = self.cannyThreshold2.value()
+
+        edges = cv2.Canny(self.img, threshold1, threshold2)
+        edges = self.apply_skeletonize(edges)
+        self.show_canny_image(edges)
     def apply_sobel_filter(self):
         if self.img is None:
             return
