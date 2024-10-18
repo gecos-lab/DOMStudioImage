@@ -168,6 +168,15 @@ class FilterTab(QWidget):
 
         self.setLayout(layout)
 
+        # Call the method to create filter-specific controls
+        self.create_filter_controls()
+
+    def create_filter_controls(self):
+        """
+        Method to be overridden by subclasses to add their specific controls.
+        """
+        pass
+
     def set_input_image(self, image):
         self.input_image = image
         self.show_input_image()
@@ -218,6 +227,7 @@ class FilterTab(QWidget):
     def apply_filter(self, image):
         # To be implemented in subclasses
         pass
+
 
 class ManualInterpretationWindow(QDialog):
     def __init__(self, original_image, filtered_image, parent=None):
@@ -440,6 +450,235 @@ class ManualInterpretationWindow(QDialog):
             x, y = zip(*temp_line)
             self.ax.plot(x, y, 'r--')
         self.canvas.draw()
+
+
+class LaplacianFilterTab(FilterTab):
+    def __init__(self, parent=None):
+        # Initialize subclass-specific attributes **before** calling the base class
+        self.laplacian_kernel_size = 3  # Default kernel size
+        super().__init__(parent)
+        self.setWindowTitle("Laplacian Filter")
+        # Do **not** call self.initUI() here; it's already called in the base class
+
+    def create_filter_controls(self):
+        # Add Kernel Size slider to controls_layout
+        kernel_layout = QHBoxLayout()
+
+        kernel_label = QLabel("Kernel Size:")
+        self.kernel_slider = QSlider(Qt.Horizontal)
+        self.kernel_slider.setRange(1, 7)  # Typically odd kernel sizes (1, 3, 5, 7)
+        self.kernel_slider.setSingleStep(2)
+        self.kernel_slider.setValue(self.laplacian_kernel_size)
+        self.kernel_slider.setTickInterval(2)
+        self.kernel_slider.setTickPosition(QSlider.TicksBelow)
+        self.kernel_slider.valueChanged.connect(self.update_kernel_size)
+
+        self.kernel_value_label = QLabel(str(self.laplacian_kernel_size))
+
+        kernel_layout.addWidget(kernel_label)
+        kernel_layout.addWidget(self.kernel_slider)
+        kernel_layout.addWidget(self.kernel_value_label)
+
+        self.controls_layout.addLayout(kernel_layout)
+
+    def update_kernel_size(self, value):
+        # Ensure kernel size is odd
+        if value % 2 == 0:
+            value += 1
+            self.kernel_slider.setValue(value)
+        self.laplacian_kernel_size = value
+        self.kernel_value_label.setText(str(value))
+        self.apply_filter()
+
+    def apply_filter(self, image=None):
+        if self.input_image is None:
+            return
+
+        # Use the blurred image if Gaussian filter is applied
+        if self.gaussian_checkbox.isChecked():
+            sigma = self.gaussian_sigma.value() / 10.0  # Convert to float
+            blurred_image = cv2.GaussianBlur(self.input_image, (0, 0), sigma)
+        else:
+            blurred_image = self.input_image.copy()
+
+        # Apply Laplacian filter
+        laplacian = cv2.Laplacian(blurred_image, cv2.CV_64F, ksize=self.laplacian_kernel_size)
+        laplacian = cv2.convertScaleAbs(laplacian)
+
+        # Apply skeletonization if enabled
+        if self.skeletonize_checkbox.isChecked():
+            laplacian = self.apply_skeletonization(laplacian)
+
+        self.filtered_image = laplacian
+        self.show_filtered_image()
+
+
+class RobertsFilterTab(FilterTab):
+    def __init__(self, parent=None):
+        # No additional attributes needed for Roberts filter
+        super().__init__(parent)
+        self.setWindowTitle("Roberts Filter")
+
+    def create_filter_controls(self):
+        # Roberts Filter doesn't require additional controls
+        pass
+
+    def apply_filter(self, image=None):
+        if self.input_image is None:
+            return
+
+        # Use the blurred image if Gaussian filter is applied
+        if self.gaussian_checkbox.isChecked():
+            sigma = self.gaussian_sigma.value() / 10.0
+            blurred_image = cv2.GaussianBlur(self.input_image, (0, 0), sigma)
+        else:
+            blurred_image = self.input_image.copy()
+
+        # Apply Roberts filter
+        kernel_roberts_x = np.array([[1, 0],
+                                     [0, -1]], dtype=np.float32)
+        kernel_roberts_y = np.array([[0, 1],
+                                     [-1, 0]], dtype=np.float32)
+        roberts_x = cv2.filter2D(blurred_image, cv2.CV_64F, kernel_roberts_x)
+        roberts_y = cv2.filter2D(blurred_image, cv2.CV_64F, kernel_roberts_y)
+        roberts = np.sqrt(roberts_x**2 + roberts_y**2)
+        roberts = cv2.convertScaleAbs(roberts)
+
+        # Apply skeletonization if enabled
+        if self.skeletonize_checkbox.isChecked():
+            roberts = self.apply_skeletonization(roberts)
+
+        self.filtered_image = roberts
+        self.show_filtered_image()
+
+
+class GaborFilterTab(FilterTab):
+    def __init__(self, parent=None):
+        # Initialize Gabor filter parameters before calling super().__init__()
+        self.theta = 45  # in degrees
+        self.lambd = 10  # wavelength
+        self.sigma = 5  # standard deviation
+        self.gamma = 0.5  # spatial aspect ratio
+        super().__init__(parent)
+        self.setWindowTitle("Gabor Filter")
+
+    def create_filter_controls(self):
+        # Theta (Orientation) slider
+        theta_layout = QHBoxLayout()
+        theta_label = QLabel("Theta (°):")
+        self.theta_slider = QSlider(Qt.Horizontal)
+        self.theta_slider.setRange(0, 180)
+        self.theta_slider.setValue(self.theta)
+        self.theta_slider.setTickInterval(30)
+        self.theta_slider.setTickPosition(QSlider.TicksBelow)
+        self.theta_slider.valueChanged.connect(self.update_theta)
+        self.theta_value_label = QLabel(str(self.theta))
+
+        theta_layout.addWidget(theta_label)
+        theta_layout.addWidget(self.theta_slider)
+        theta_layout.addWidget(self.theta_value_label)
+        self.controls_layout.addLayout(theta_layout)
+
+        # Lambda (Wavelength) slider
+        lambda_layout = QHBoxLayout()
+        lambda_label = QLabel("Lambda:")
+        self.lambda_slider = QSlider(Qt.Horizontal)
+        self.lambda_slider.setRange(5, 20)
+        self.lambda_slider.setValue(self.lambd)
+        self.lambda_slider.setTickInterval(5)
+        self.lambda_slider.setTickPosition(QSlider.TicksBelow)
+        self.lambda_slider.valueChanged.connect(self.update_lambda)
+        self.lambda_value_label = QLabel(str(self.lambd))
+
+        lambda_layout.addWidget(lambda_label)
+        lambda_layout.addWidget(self.lambda_slider)
+        lambda_layout.addWidget(self.lambda_value_label)
+        self.controls_layout.addLayout(lambda_layout)
+
+        # Sigma slider
+        sigma_layout = QHBoxLayout()
+        sigma_label = QLabel("Sigma:")
+        self.sigma_slider = QSlider(Qt.Horizontal)
+        self.sigma_slider.setRange(1, 10)
+        self.sigma_slider.setValue(self.sigma)
+        self.sigma_slider.setTickInterval(1)
+        self.sigma_slider.setTickPosition(QSlider.TicksBelow)
+        self.sigma_slider.valueChanged.connect(self.update_sigma)
+        self.sigma_value_label = QLabel(str(self.sigma))
+
+        sigma_layout.addWidget(sigma_label)
+        sigma_layout.addWidget(self.sigma_slider)
+        sigma_layout.addWidget(self.sigma_value_label)
+        self.controls_layout.addLayout(sigma_layout)
+
+        # Gamma slider
+        gamma_layout = QHBoxLayout()
+        gamma_label = QLabel("Gamma:")
+        self.gamma_slider = QSlider(Qt.Horizontal)
+        self.gamma_slider.setRange(1, 10)  # Representing 0.1 to 1.0
+        self.gamma_slider.setValue(int(self.gamma * 10))
+        self.gamma_slider.setTickInterval(1)
+        self.gamma_slider.setTickPosition(QSlider.TicksBelow)
+        self.gamma_slider.valueChanged.connect(self.update_gamma)
+        self.gamma_value_label = QLabel(f"{self.gamma:.1f}")
+
+        gamma_layout.addWidget(gamma_label)
+        gamma_layout.addWidget(self.gamma_slider)
+        gamma_layout.addWidget(self.gamma_value_label)
+        self.controls_layout.addLayout(gamma_layout)
+
+    def update_theta(self, value):
+        self.theta = value
+        self.theta_value_label.setText(str(value))
+        self.apply_filter()
+
+    def update_lambda(self, value):
+        self.lambd = value
+        self.lambda_value_label.setText(str(value))
+        self.apply_filter()
+
+    def update_sigma(self, value):
+        self.sigma = value
+        self.sigma_value_label.setText(str(value))
+        self.apply_filter()
+
+    def update_gamma(self, value):
+        self.gamma = value / 10.0
+        self.gamma_value_label.setText(f"{self.gamma:.1f}")
+        self.apply_filter()
+
+    def apply_filter(self, image=None):
+        if self.input_image is None:
+            return
+
+        # Use the blurred image if Gaussian filter is applied
+        if self.gaussian_checkbox.isChecked():
+            sigma_gaussian = self.gaussian_sigma.value() / 10.0
+            blurred_image = cv2.GaussianBlur(self.input_image, (3, 3), sigma_gaussian)
+        else:
+            blurred_image = self.input_image.copy()
+
+        # Convert degrees to radians for theta
+        theta_rad = np.deg2rad(self.theta)
+
+        # Create Gabor kernel
+        kernel_size = 21  # Fixed size for simplicity
+        kernel = cv2.getGaborKernel((kernel_size, kernel_size), self.sigma, theta_rad, self.lambd, self.gamma, 0,
+                                    ktype=cv2.CV_32F)
+
+        # Apply Gabor filter
+        gabor = cv2.filter2D(blurred_image, cv2.CV_8UC3, kernel)
+
+        # Normalize to range 0-255
+        gabor = cv2.normalize(gabor, None, 0, 255, cv2.NORM_MINMAX)
+
+        # Apply skeletonization if enabled
+        if self.skeletonize_checkbox.isChecked():
+            gabor = self.apply_skeletonization(gabor)
+
+        self.filtered_image = gabor
+        self.show_filtered_image()
+
 
 class CannyFilterTab(FilterTab):
     def __init__(self, parent=None):
@@ -1120,9 +1359,6 @@ class MyWindow(QMainWindow):
         self.shearlet_system = None
         self.setGeometry(100, 100, 1200, 800)
         self.initUI()
-        self.shearletMinContrast = QSlider(Qt.Horizontal)
-        self.shearletMinContrast.setRange(0, 100)
-        self.shearletMinContrast.setValue(10)
 
     def initUI(self):
         self.setWindowTitle('DOMStudioImage')
@@ -1137,9 +1373,12 @@ class MyWindow(QMainWindow):
         main_layout.addWidget(self.tab_widget)
 
         # Add filter tabs
-        self.add_filter_tab("Canny")
-        self.add_filter_tab("Sobel")
-        self.add_filter_tab("Shearlet")
+        self.add_filter_tab("Canny", CannyFilterTab)
+        self.add_filter_tab("Sobel", SobelFilterTab)
+        self.add_filter_tab("Shearlet", ShearletFilterTab)
+        self.add_filter_tab("Laplacian", LaplacianFilterTab)
+        self.add_filter_tab("Roberts", RobertsFilterTab)
+        self.add_filter_tab("Gabor Filter", GaborFilterTab)
 
         # Add "+" tab for creating new tabs
         self.tab_widget.addTab(QWidget(), "+")
@@ -1153,26 +1392,77 @@ class MyWindow(QMainWindow):
         # Clean Short Edges button
         self.clean_edges_button = QPushButton("Clean Short Edges")
         self.clean_edges_button.clicked.connect(self.clean_short_edges)
+        self.clean_edges_button.setEnabled(False)  # Initially disabled
         main_layout.addWidget(self.clean_edges_button)
 
         # Manual Interpretation button
         self.manual_interpretation_button = QPushButton("Manual Interpretation")
         self.manual_interpretation_button.clicked.connect(self.open_manual_interpretation)
+        self.manual_interpretation_button.setEnabled(False)  # Initially disabled
         main_layout.addWidget(self.manual_interpretation_button)
 
         self.createMenus()
 
-    def add_filter_tab(self, filter_name):
-        if filter_name == "Canny":
-            tab = CannyFilterTab(self)
-        elif filter_name == "Sobel":
-            tab = SobelFilterTab(self)
-        elif filter_name == "Shearlet":
-            tab = ShearletFilterTab(self)
-        else:
-            tab = FilterTab(self)
-
+    def add_filter_tab(self, filter_name, filter_class):
+        tab = filter_class(self)
         self.tab_widget.insertTab(self.tab_widget.count() - 1, tab, filter_name)
+
+    def handle_tab_click(self, index):
+        if self.tab_widget.tabText(index) == "+":
+            filter_name, ok = QInputDialog.getText(self, "New Filter", "Enter filter name:")
+            if ok and filter_name:
+                # For simplicity, we'll add a generic FilterTab. Customize as needed.
+                new_filter = FilterTab(self)
+                new_filter.setWindowTitle(filter_name)
+                self.tab_widget.insertTab(index, new_filter, filter_name)
+
+    def load_image(self):
+        img_path, _ = QFileDialog.getOpenFileName(self, "Open Image File", "",
+                                                  "Image Files (*.png *.jpg *.bmp *.tif *.tiff)")
+        if img_path:
+            self.img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+            if self.img is not None:
+                self.img = cv2.normalize(self.img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                # Optionally, resize the image
+                # self.img = cv2.resize(self.img, (256, 256))
+                self.mask = np.zeros(self.img.shape[:2], np.uint8)
+                self.filtered_img = self.img.copy()
+                self.shearlet_system = EdgeSystem(*self.img.shape)
+
+                # Update all filter tabs with the new image
+                for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
+                    tab = self.tab_widget.widget(i)
+                    if isinstance(tab, FilterTab):
+                        tab.set_input_image(self.img)
+
+                # Enable buttons that require an image
+                self.manual_interpretation_button.setEnabled(True)
+                self.clean_edges_button.setEnabled(True)
+
+                QMessageBox.information(self, "Image Loaded", "Image loaded successfully.")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to load image.")
+
+    def clean_short_edges(self):
+        current_tab = self.tab_widget.currentWidget()
+        if isinstance(current_tab, FilterTab) and current_tab.filtered_image is not None:
+            # Convert the filtered image to a binary image
+            _, binary_image = cv2.threshold(current_tab.filtered_image, 127, 255, cv2.THRESH_BINARY)
+
+            # Find contours
+            contours, _ = cv2.findContours(binary_image, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+            # Filter out short edges
+            min_length = 10  # You can adjust this value
+            long_contours = [cnt for cnt in contours if cv2.arcLength(cnt, False) > min_length]
+
+            # Create a blank image and draw the long contours
+            cleaned_image = np.zeros_like(current_tab.filtered_image)
+            cv2.drawContours(cleaned_image, long_contours, -1, (255, 255, 255), 1)
+
+            # Update the filtered image in the tab
+            current_tab.filtered_image = cleaned_image
+            current_tab.show_filtered_image()
 
     def open_manual_interpretation(self):
         current_tab = self.tab_widget.currentWidget()
@@ -1181,60 +1471,6 @@ class MyWindow(QMainWindow):
             self.manual_interpretation_window.show()
         else:
             QMessageBox.warning(self, "Warning", "Please load an image and apply a filter first before using manual interpretation.")
-    def handle_tab_click(self, index):
-        if self.tab_widget.tabText(index) == "+":
-            filter_name, ok = QInputDialog.getText(self, "New Filter", "Enter filter name:")
-            if ok and filter_name:
-                self.add_filter_tab(filter_name)
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.update_image_sizes()
-
-    def show_image(self, figure, image, cmap='gray'):
-        figure.clear()
-        ax = figure.add_subplot(111)
-        ax.imshow(image, cmap=cmap, aspect='equal')
-        ax.axis('off')
-        figure.tight_layout(pad=0)
-        figure.canvas.draw()
-
-    def update_image_sizes(self):
-        if self.img is not None:
-            self.show_original_image()
-            self.apply_canny_filter()
-            self.apply_sobel_filter()
-            self.apply_shearlet_filter()
-            self.show_manual_interpretation()
-
-    def process_batch_files(self, input_files, output_dir, filter_type):
-        # Find the correct filter tab
-        filter_tab = None
-        for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
-            tab = self.tab_widget.widget(i)
-            if isinstance(tab, FilterTab) and self.tab_widget.tabText(i) == filter_type:
-                filter_tab = tab
-                break
-
-        if filter_tab is None:
-            QMessageBox.warning(self, "Error", f"Filter {filter_type} not found.")
-            return
-
-        for input_file in input_files:
-            img = cv2.imread(input_file, cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                continue
-
-            # Apply the filter
-            filter_tab.set_input_image(img)
-            filter_tab.update_filter()
-            processed = filter_tab.filtered_image
-
-            output_filename = os.path.join(output_dir,
-                                           f"{os.path.splitext(os.path.basename(input_file))[0]}_{filter_type}.png")
-            cv2.imwrite(output_filename, processed)
-
-        QMessageBox.information(self, "Batch Process Complete",
-                                f"Processed {len(input_files)} images with {filter_type} filter.")
 
     def createMenus(self):
         menubar = self.menuBar()
@@ -1257,7 +1493,6 @@ class MyWindow(QMainWindow):
         exitAction = QAction('Exit', self)
         exitAction.triggered.connect(self.close)
         fileMenu.addAction(exitAction)
-
 
         exportShapefileAction = QAction('Export to Shapefile', self)
         exportShapefileAction.triggered.connect(self.export_to_shapefile)
@@ -1282,7 +1517,7 @@ class MyWindow(QMainWindow):
         toolsMenu = menubar.addMenu('Tools')
         imagePropertiesMenu = toolsMenu.addMenu('Image Properties')
         edgeLinkAction = QAction('Edge Link', self)
-        # edgeLinkAction.triggered.connect(self.open_edge_link_window)
+        # edgeLinkAction.triggered.connect(self.open_edge_link_window)  # Implement as needed
         toolsMenu.addAction(edgeLinkAction)
 
         calculateStatsMenu = toolsMenu.addMenu('Calculate Statistics')
@@ -1330,6 +1565,7 @@ class MyWindow(QMainWindow):
 
         helpMenu = menubar.addMenu('Help')
         helpMenu.addAction('About')
+
     def open_batch_process_dialog(self):
         dialog = BatchProcessDialog(self)
         dialog.exec_()
