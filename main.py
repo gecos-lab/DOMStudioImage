@@ -39,7 +39,71 @@ from utility import edgelink, cleanedgelist
 from PyQt5.QtCore import QTimer
 from skimage.morphology import skeletonize
 from skimage.morphology import thin
+from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QPushButton, QGraphicsScene, QGraphicsView, QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsItem)
+from PyQt5.QtGui import QImage, QPixmap, QPainterPath, QPen
+from PyQt5.QtCore import Qt, QPointF
+from PyQt5.QtWidgets import (
+    QDialog, QVBoxLayout, QPushButton, QGraphicsScene, QGraphicsView,
+    QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsItem, QApplication,
+    QHBoxLayout, QMessageBox, QMenu, QAction, QGraphicsPixmapItem
+)
+from PyQt5.QtGui import QImage, QPixmap, QPainterPath, QPen, QColor
+from PyQt5.QtCore import Qt, QPointF, QRectF
 
+from PyQt5.QtGui import QTransform
+
+ # Define a NodeItem representing control points
+class NodeItem(QGraphicsEllipseItem):
+    def __init__(self, x, y, radius=5, parent=None):
+        super().__init__(-radius, -radius, 2*radius, 2*radius, parent)
+        self.setPos(x, y)
+        self.setBrush(QColor('blue'))
+        self.setPen(QPen(Qt.black))
+        self.setFlags(
+            QGraphicsItem.ItemIsMovable |
+            QGraphicsItem.ItemSendsGeometryChanges |
+            QGraphicsItem.ItemIsSelectable
+        )
+        self.lines = []  # Lines connected to this node
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionHasChanged:
+            for line in self.lines:
+                line.update_path()
+        return super().itemChange(change, value)
+
+
+# Define a LineItem representing lines composed of nodes
+class LineItem(QGraphicsPathItem):
+    def __init__(self, nodes=None, parent=None):
+        super().__init__(parent)
+        self.nodes = nodes if nodes else []
+        pen = QPen(QColor('red'))
+        pen.setWidth(2)
+        self.setPen(pen)
+        self.setFlags(
+            QGraphicsItem.ItemIsSelectable  # Lines are selectable but not movable
+        )
+        self.update_path()
+
+    def update_path(self):
+        path = QPainterPath()
+        if self.nodes:
+            path.moveTo(self.nodes[0].pos())
+            for node in self.nodes[1:]:
+                path.lineTo(node.pos())
+        self.setPath(path)
+
+    def add_node(self, node):
+        self.nodes.append(node)
+        node.lines.append(self)
+        self.update_path()
+
+    def remove_node(self, node):
+        if node in self.nodes:
+            self.nodes.remove(node)
+            node.lines.remove(self)
+            self.update_path()
 def parse_path(path_data):
     commands = re.findall(r'([MLHVCSQTAZ])([^MLHVCSQTAZ]*)', path_data.upper())
     points = []
@@ -229,21 +293,6 @@ class FilterTab(QWidget):
         pass
 
 
-import sys
-import heapq
-import numpy as np
-import cv2
-from PyQt5.QtWidgets import (QDialog, QLabel, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QMessageBox)
-from PyQt5.QtCore import Qt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.figure import Figure
-from skimage.filters import gaussian
-from skimage import feature
-from skimage.morphology import skeletonize
-
-
 class ManualInterpretationWindow(QDialog):
     def __init__(self, original_image, filtered_image, parent=None):
         super().__init__(parent)
@@ -251,7 +300,7 @@ class ManualInterpretationWindow(QDialog):
         # Initialize images
         self.original_image = original_image
         self.filtered_image = filtered_image
-        self.image = filtered_image  # Initialize before calling initUI()
+        self.display_image = original_image.copy()  # Display the original image
 
         # Initialize drawing attributes
         self.lines = []
@@ -269,31 +318,39 @@ class ManualInterpretationWindow(QDialog):
 
     def initUI(self):
         self.setWindowTitle('Manual Interpretation')
-        self.setGeometry(100, 100, 1200, 600)  # Adjusted size for better layout
+        self.setGeometry(100, 100, 1200, 800)  # Adjusted size for better layout
 
         # Main layout
         layout = QVBoxLayout()
 
-        # Matplotlib Figure and Canvas
-        self.figure = Figure(figsize=(10, 6))
-        self.canvas = FigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, self)
+        # Create QGraphicsScene and QGraphicsView
+        self.scene = QGraphicsScene()
+        self.view = QGraphicsView(self.scene)
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.view.setDragMode(QGraphicsView.NoDrag)  # Ensure no interference with item interactions
+        layout.addWidget(self.view)
 
-        layout.addWidget(self.toolbar)
-        layout.addWidget(self.canvas)
+        # Display the original image
+        self.show_original_image()
+
+        # Overlay filtered lines as LineItems
+        self.display_filtered_lines()
 
         # Control Buttons
         button_layout = QHBoxLayout()
 
         self.toggle_drawing_button = QPushButton("Enable Manual Drawing")
+        self.toggle_drawing_button.setCheckable(True)
         self.toggle_drawing_button.clicked.connect(self.toggle_drawing)
         button_layout.addWidget(self.toggle_drawing_button)
 
         self.toggle_semi_auto_button = QPushButton("Enable Semi-Auto Drawing")
+        self.toggle_semi_auto_button.setCheckable(True)
         self.toggle_semi_auto_button.clicked.connect(self.toggle_semi_auto)
         button_layout.addWidget(self.toggle_semi_auto_button)
 
         self.edit_mode_button = QPushButton("Enter Edit Mode")
+        self.edit_mode_button.setCheckable(True)
         self.edit_mode_button.clicked.connect(self.toggle_edit_mode)
         button_layout.addWidget(self.edit_mode_button)
 
@@ -302,43 +359,63 @@ class ManualInterpretationWindow(QDialog):
         self.setLayout(layout)
 
         # Connect mouse events
-        self.canvas.mpl_connect("button_press_event", self.on_canvas_click)
-        self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
-        self.canvas.mpl_connect("button_release_event", self.on_mouse_release)
+        self.view.viewport().installEventFilter(self)
 
-        # Display the initial image
-        self.show_image()
+    def show_original_image(self):
+        # Convert the original image to QImage
+        height, width = self.display_image.shape
+        bytes_per_line = width
+        q_image = QImage(self.display_image.data, width, height, bytes_per_line, QImage.Format_Grayscale8)
+        pixmap = QPixmap.fromImage(q_image)
 
-    def show_image(self):
-        self.figure.clear()
-        self.ax = self.figure.add_subplot(111)
-        self.ax.imshow(self.image, cmap='gray')
-        self.ax.axis('off')
-        self.canvas.draw()
+        # Add the image to the scene
+        self.pixmap_item = QGraphicsPixmapItem(pixmap)
+        self.pixmap_item.setZValue(0)  # Ensure it's at the back
+        self.scene.addItem(self.pixmap_item)
 
-        # Redraw existing lines
-        for line in self.lines:
-            if line and len(line) > 1:
-                x, y = zip(*line)
-                self.ax.plot(x, y, 'r-')
+    def display_filtered_lines(self):
+        # Assuming filtered_image is a binary image
+        if self.filtered_image is not None:
+            # Simplify the contours to reduce the number of nodes
+            contours, _ = cv2.findContours(self.filtered_image, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                if len(contour) >= 2:
+                    # Simplify the contour using approxPolyDP
+                    epsilon = 0.02 * cv2.arcLength(contour, True)  # Increased epsilon for more simplification
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    points = [(point[0][0], point[0][1]) for point in approx]
 
-        if self.current_line and len(self.current_line) > 1:
-            x, y = zip(*self.current_line)
-            self.ax.plot(x, y, 'r--')
+                    # Further reduce the number of points by sampling every nth point
+                    sampling_rate = 3  # Increased sampling rate to reduce nodes further
+                    sampled_points = points[::sampling_rate]
 
-        self.canvas.draw()
+                    if len(sampled_points) >= 2:
+                        self.add_line(sampled_points)
 
-    def toggle_drawing(self):
-        self.is_drawing = not self.is_drawing
+    def add_line(self, points):
+        line = LineItem()
+        line.setZValue(1)  # Ensure lines are above the background
+        self.scene.addItem(line)
+        self.lines.append(line)
+
+        for x, y in points:
+            node = NodeItem(x, y, radius=5)  # Increased radius for better visibility
+            node.setZValue(2)  # Ensure nodes are above lines
+            self.scene.addItem(node)
+            line.add_node(node)
+
+    def toggle_drawing(self, checked):
+        self.is_drawing = checked
         self.is_semi_auto = False
         self.is_edit_mode = False
         self.semi_auto_start_point = None
         self.toggle_drawing_button.setText("Disable Manual Drawing" if self.is_drawing else "Enable Manual Drawing")
         self.toggle_semi_auto_button.setText("Enable Semi-Auto Drawing")
         self.edit_mode_button.setText("Enter Edit Mode")
+        self.show_overlay()
 
-    def toggle_semi_auto(self):
-        self.is_semi_auto = not self.is_semi_auto
+    def toggle_semi_auto(self, checked):
+        self.is_semi_auto = checked
         self.is_drawing = False
         self.is_edit_mode = False
         self.semi_auto_start_point = None
@@ -346,87 +423,107 @@ class ManualInterpretationWindow(QDialog):
             "Disable Semi-Auto Drawing" if self.is_semi_auto else "Enable Semi-Auto Drawing")
         self.toggle_drawing_button.setText("Enable Manual Drawing")
         self.edit_mode_button.setText("Enter Edit Mode")
+        self.show_overlay()
 
-    def toggle_edit_mode(self):
-        self.is_edit_mode = not self.is_edit_mode
+    def toggle_edit_mode(self, checked):
+        self.is_edit_mode = checked
         self.is_drawing = False
         self.is_semi_auto = False
+        self.semi_auto_start_point = None
+        self.edit_mode_button.setText("Exit Edit Mode" if self.is_edit_mode else "Enter Edit Mode")
+
         if self.is_edit_mode:
-            self.toggle_drawing_button.setEnabled(False)
-            self.toggle_semi_auto_button.setEnabled(False)
-            self.edit_mode_button.setText("Exit Edit Mode")
             QMessageBox.information(self, "Edit Mode",
-                                    "Click near a line point to edit. Click 'Exit Edit Mode' when done.")
-        else:
-            self.toggle_drawing_button.setEnabled(True)
-            self.toggle_semi_auto_button.setEnabled(True)
-            self.edit_mode_button.setText("Enter Edit Mode")
+                                    "Edit Mode Enabled.\nSelect and drag nodes to edit the lines.")
+        self.show_overlay()
 
-    def on_canvas_click(self, event):
-        if event.inaxes != self.ax:
-            return
+    def show_overlay(self):
+        # Update the scene to reflect edit mode and highlight selected items
+        for line in self.lines:
+            line.setFlags(QGraphicsItem.ItemIsSelectable)  # Lines are selectable but not movable
 
-        x, y = int(event.xdata), int(event.ydata)
-
-        if self.is_drawing:
-            if event.button == 1:  # Left click
-                if not self.current_line:
-                    self.current_line = [(x, y)]
+        for line in self.lines:
+            for node in line.nodes:
+                if self.is_edit_mode:
+                    node.setFlags(
+                        QGraphicsItem.ItemIsMovable |
+                        QGraphicsItem.ItemSendsGeometryChanges |
+                        QGraphicsItem.ItemIsSelectable
+                    )
                 else:
-                    self.current_line.append((x, y))
-                    self.show_image()
-            elif event.button == 3:  # Right click to finish the line
-                if self.current_line:
-                    self.lines.append(self.current_line)
-                    self.current_line = []
-                    self.show_image()
-        elif self.is_semi_auto:
-            if not self.semi_auto_start_point:
-                self.semi_auto_start_point = (x, y)
-                QMessageBox.information(self, "Semi-Auto Drawing", "Start point set. Click again to set end point.")
+                    node.setFlags(QGraphicsItem.ItemIsSelectable)
+
+        # Highlight selected items
+        for line in self.lines:
+            if line.isSelected():
+                line.setPen(QPen(QColor('green'), 2))
             else:
-                end_point = (x, y)
-                self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
-                self.semi_auto_start_point = None
-        elif self.is_edit_mode:
-            self.edit_nearest_point(x, y)
+                line.setPen(QPen(QColor('red'), 2))
+            for node in line.nodes:
+                if node.isSelected():
+                    node.setBrush(QColor('yellow'))
+                else:
+                    node.setBrush(QColor('blue'))
+        # Refresh the scene to apply changes
+        self.scene.update()
 
-    def on_mouse_move(self, event):
-        if not self.is_drawing or not self.current_line or event.inaxes != self.ax:
-            return
+    def eventFilter(self, source, event):
+        if event.type() == event.MouseButtonPress:
+            if self.is_drawing and event.button() == Qt.LeftButton:
+                scene_pos = self.view.mapToScene(event.pos())
+                x, y = int(scene_pos.x()), int(scene_pos.y())
+                self.current_line.append((x, y))
+                self.add_manual_line(x, y)
+            elif self.is_semi_auto and event.button() == Qt.LeftButton:
+                scene_pos = self.view.mapToScene(event.pos())
+                x, y = int(scene_pos.x()), int(scene_pos.y())
+                if not self.semi_auto_start_point:
+                    self.semi_auto_start_point = (x, y)
+                    QMessageBox.information(self, "Semi-Auto Drawing",
+                                            "Start point set. Click again to set end point.")
+                else:
+                    end_point = (x, y)
+                    self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
+                    self.semi_auto_start_point = None
+            return True  # Event handled
+        return super().eventFilter(source, event)
 
-        x, y = int(event.xdata), int(event.ydata)
-        temp_line = self.current_line + [(x, y)]
-        self.show_image()
-        self.ax.plot([pt[0] for pt in temp_line], [pt[1] for pt in temp_line], 'r--')
-        self.canvas.draw()
+    def add_manual_line(self, x, y):
+        if len(self.current_line) == 1:
+            # Create a new line
+            self.current_line_item = LineItem()
+            self.current_line_item.setZValue(1)  # Ensure lines are above the background
+            self.scene.addItem(self.current_line_item)
+            self.lines.append(self.current_line_item)
 
-    def on_mouse_release(self, event):
-        if self.is_drawing and event.button == 1 and self.current_line:  # Left click release
-            x, y = int(event.xdata), int(event.ydata)
-            self.current_line.append((x, y))
-            self.show_image()
+            # Create a node
+            node = NodeItem(x, y, radius=5)  # Increased radius for better visibility
+            node.setZValue(2)  # Ensure nodes are above lines
+            self.scene.addItem(node)
+            self.current_line_item.add_node(node)
+        else:
+            # Add a node and update the line
+            node = NodeItem(x, y, radius=5)
+            node.setZValue(2)
+            self.scene.addItem(node)
+            self.current_line_item.add_node(node)
 
     def semi_automatic_tracking(self, start_point, end_point):
-        # Convert points to image coordinates
-        start = (int(start_point[1]), int(start_point[0]))
-        goal = (int(end_point[1]), int(end_point[0]))
-
-        # Use A* algorithm to find the path
-        path = self.a_star(self.edge_map, start, goal)
+        # Use A* algorithm to find a path from start_point to end_point on the edge_map
+        path = self.a_star(self.edge_map, start_point, end_point)
 
         if path:
-            # Convert path back to display coordinates
-            tracked_line = [(x, y) for y, x in path]
-            self.lines.append(tracked_line)
-            self.show_image()
+            # Convert path to list of (x, y) tuples
+            tracked_line = [(point[1], point[0]) for point in path]  # Swap to (x, y)
+            self.add_line(tracked_line)
         else:
             QMessageBox.warning(self, "Path Not Found",
-                                "Could not find a path between the selected points. Try selecting closer points or adjusting the filter settings.")
+                                "Could not find a path between the selected points. "
+                                "Try selecting closer points or adjusting the filter settings.")
 
     def create_edge_map(self):
         # Use the filtered image to create the edge map
-        blurred_image = gaussian(self.filtered_image, sigma=2)
+        blurred_image = gaussian_filter(self.filtered_image, sigma=2)
         edges = feature.canny(blurred_image, sigma=2)
         return 1 - edges.astype(float)  # Invert for A* cost map
 
@@ -434,8 +531,9 @@ class ManualInterpretationWindow(QDialog):
         def heuristic(a, b):
             return np.hypot(b[0] - a[0], b[1] - a[1])
 
-        neighbors = [(0, 1), (0, -1), (1, 0), (-1, 0),
-                     (1, 1), (1, -1), (-1, 1), (-1, -1)]
+        neighbors = [(-1, -1), (-1, 0), (-1, 1),
+                     (0, -1),         (0, 1),
+                     (1, -1),  (1, 0),  (1, 1)]
 
         close_set = set()
         came_from = {}
@@ -460,10 +558,10 @@ class ManualInterpretationWindow(QDialog):
 
             for i, j in neighbors:
                 neighbor = current[0] + i, current[1] + j
-                if 0 <= neighbor[0] < cost_map.shape[0] and 0 <= neighbor[1] < cost_map.shape[1]:
-                    if neighbor in close_set:
-                        continue
+                if (0 <= neighbor[0] < cost_map.shape[0] and 0 <= neighbor[1] < cost_map.shape[1]):
                     tentative_g_score = gscore[current] + cost_map[neighbor]
+                    if neighbor in close_set and tentative_g_score >= gscore.get(neighbor, float('inf')):
+                        continue
                     if tentative_g_score < gscore.get(neighbor, float('inf')):
                         came_from[neighbor] = current
                         gscore[neighbor] = tentative_g_score
@@ -477,45 +575,51 @@ class ManualInterpretationWindow(QDialog):
         nearest_line = None
         nearest_point_index = None
 
-        for i, line in enumerate(self.lines):
-            for j, point in enumerate(line):
-                distance = np.sqrt((x - point[0]) ** 2 + (y - point[1]) ** 2)
-                if distance < min_distance:
-                    min_distance = distance
-                    nearest_line = i
-                    nearest_point_index = j
+        for line in self.lines:
+            if isinstance(line, LineItem):
+                for j, node in enumerate(line.nodes):
+                    distance = np.sqrt((x - node.pos().x()) ** 2 + (y - node.pos().y()) ** 2)
+                    if distance < min_distance:
+                        min_distance = distance
+                        nearest_line = line
+                        nearest_point_index = j
 
         if nearest_line is not None and min_distance < 10:  # Threshold for selection
-            self.lines[nearest_line][nearest_point_index] = (x, y)
-            self.show_image()
+            node = nearest_line.nodes[nearest_point_index]
+            node.setSelected(True)
+            nearest_line.setSelected(True)
+            self.show_overlay()
 
-    def show_image_with_lines(self):
-        self.figure.clear()
-        self.ax = self.figure.add_subplot(111)
-        self.ax.imshow(self.image, cmap='gray')
-        self.ax.axis('off')
+    
+    def contextMenuEvent(self, event):
+        item = self.scene.itemAt(self.view.mapToScene(event.pos()), QTransform())
+        if isinstance(item, NodeItem):
+            menu = QMenu()
+            delete_action = QAction('Delete Node', self)
+            delete_action.triggered.connect(lambda: self.delete_node(item))
+            menu.addAction(delete_action)
+            menu.exec_(event.globalPos())
+        elif isinstance(item, LineItem):
+            menu = QMenu()
+            delete_action = QAction('Delete Line', self)
+            delete_action.triggered.connect(lambda: self.delete_line(item))
+            menu.addAction(delete_action)
+            menu.exec_(event.globalPos())
 
-        for line in self.lines:
-            if line and len(line) > 1:
-                x, y = zip(*line)
-                self.ax.plot(x, y, 'r-')
+    def delete_node(self, node):
+        for line in node.lines.copy():
+            line.remove_node(node)
+            if len(line.nodes) < 2:
+                self.delete_line(line)
+        self.scene.removeItem(node)
 
-        if self.current_line and len(self.current_line) > 1:
-            x, y = zip(*self.current_line)
-            self.ax.plot(x, y, 'r--')
-
-        self.canvas.draw()
-
-    def draw_lines(self, temp_line=None):
-        self.show_image_with_lines()
-        if temp_line and len(temp_line) > 1:
-            x, y = zip(*temp_line)
-            self.ax.plot(x, y, 'r--')
-            self.canvas.draw()
-
-    # Optionally, remove or simplify redundant methods if the class is too large
-
-
+    def delete_line(self, line):
+        for node in line.nodes:
+            if line in node.lines:
+                node.lines.remove(line)
+        if line in self.lines:
+            self.lines.remove(line)
+        self.scene.removeItem(line)
 class LaplacianFilterTab(FilterTab):
     def __init__(self, parent=None):
         # Initialize subclass-specific attributes **before** calling the base class
