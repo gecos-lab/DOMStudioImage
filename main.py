@@ -229,51 +229,84 @@ class FilterTab(QWidget):
         pass
 
 
+import sys
+import heapq
+import numpy as np
+import cv2
+from PyQt5.QtWidgets import (QDialog, QLabel, QVBoxLayout, QHBoxLayout,
+                             QPushButton, QMessageBox)
+from PyQt5.QtCore import Qt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.figure import Figure
+from skimage.filters import gaussian
+from skimage import feature
+from skimage.morphology import skeletonize
+
+
 class ManualInterpretationWindow(QDialog):
     def __init__(self, original_image, filtered_image, parent=None):
         super().__init__(parent)
+
+        # Initialize images
         self.original_image = original_image
         self.filtered_image = filtered_image
+        self.image = filtered_image  # Initialize before calling initUI()
+
+        # Initialize drawing attributes
         self.lines = []
         self.current_line = []
         self.is_drawing = False
         self.is_semi_auto = False
         self.is_edit_mode = False
         self.semi_auto_start_point = None
+
+        # Create edge map for semi-automatic tracking
         self.edge_map = self.create_edge_map()
+
+        # Initialize UI
         self.initUI()
 
     def initUI(self):
         self.setWindowTitle('Manual Interpretation')
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 1200, 600)  # Adjusted size for better layout
 
+        # Main layout
         layout = QVBoxLayout()
 
-        self.figure = Figure(figsize=(8, 6))
+        # Matplotlib Figure and Canvas
+        self.figure = Figure(figsize=(10, 6))
         self.canvas = FigureCanvas(self.figure)
         self.toolbar = NavigationToolbar(self.canvas, self)
 
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
 
+        # Control Buttons
+        button_layout = QHBoxLayout()
+
         self.toggle_drawing_button = QPushButton("Enable Manual Drawing")
         self.toggle_drawing_button.clicked.connect(self.toggle_drawing)
-        layout.addWidget(self.toggle_drawing_button)
+        button_layout.addWidget(self.toggle_drawing_button)
 
         self.toggle_semi_auto_button = QPushButton("Enable Semi-Auto Drawing")
         self.toggle_semi_auto_button.clicked.connect(self.toggle_semi_auto)
-        layout.addWidget(self.toggle_semi_auto_button)
+        button_layout.addWidget(self.toggle_semi_auto_button)
 
         self.edit_mode_button = QPushButton("Enter Edit Mode")
         self.edit_mode_button.clicked.connect(self.toggle_edit_mode)
-        layout.addWidget(self.edit_mode_button)
+        button_layout.addWidget(self.edit_mode_button)
+
+        layout.addLayout(button_layout)
 
         self.setLayout(layout)
 
+        # Connect mouse events
         self.canvas.mpl_connect("button_press_event", self.on_canvas_click)
         self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
         self.canvas.mpl_connect("button_release_event", self.on_mouse_release)
 
+        # Display the initial image
         self.show_image()
 
     def show_image(self):
@@ -281,6 +314,18 @@ class ManualInterpretationWindow(QDialog):
         self.ax = self.figure.add_subplot(111)
         self.ax.imshow(self.image, cmap='gray')
         self.ax.axis('off')
+        self.canvas.draw()
+
+        # Redraw existing lines
+        for line in self.lines:
+            if line and len(line) > 1:
+                x, y = zip(*line)
+                self.ax.plot(x, y, 'r-')
+
+        if self.current_line and len(self.current_line) > 1:
+            x, y = zip(*self.current_line)
+            self.ax.plot(x, y, 'r--')
+
         self.canvas.draw()
 
     def toggle_drawing(self):
@@ -297,7 +342,8 @@ class ManualInterpretationWindow(QDialog):
         self.is_drawing = False
         self.is_edit_mode = False
         self.semi_auto_start_point = None
-        self.toggle_semi_auto_button.setText("Disable Semi-Auto Drawing" if self.is_semi_auto else "Enable Semi-Auto Drawing")
+        self.toggle_semi_auto_button.setText(
+            "Disable Semi-Auto Drawing" if self.is_semi_auto else "Enable Semi-Auto Drawing")
         self.toggle_drawing_button.setText("Enable Manual Drawing")
         self.edit_mode_button.setText("Enter Edit Mode")
 
@@ -309,7 +355,8 @@ class ManualInterpretationWindow(QDialog):
             self.toggle_drawing_button.setEnabled(False)
             self.toggle_semi_auto_button.setEnabled(False)
             self.edit_mode_button.setText("Exit Edit Mode")
-            QMessageBox.information(self, "Edit Mode", "Click near a line point to edit. Click 'Exit Edit Mode' when done.")
+            QMessageBox.information(self, "Edit Mode",
+                                    "Click near a line point to edit. Click 'Exit Edit Mode' when done.")
         else:
             self.toggle_drawing_button.setEnabled(True)
             self.toggle_semi_auto_button.setEnabled(True)
@@ -327,12 +374,12 @@ class ManualInterpretationWindow(QDialog):
                     self.current_line = [(x, y)]
                 else:
                     self.current_line.append((x, y))
-                    self.draw_lines()
-            elif event.button == 3:  # Right click
+                    self.show_image()
+            elif event.button == 3:  # Right click to finish the line
                 if self.current_line:
                     self.lines.append(self.current_line)
                     self.current_line = []
-                    self.draw_lines()
+                    self.show_image()
         elif self.is_semi_auto:
             if not self.semi_auto_start_point:
                 self.semi_auto_start_point = (x, y)
@@ -350,41 +397,45 @@ class ManualInterpretationWindow(QDialog):
 
         x, y = int(event.xdata), int(event.ydata)
         temp_line = self.current_line + [(x, y)]
-        self.draw_lines(temp_line)
+        self.show_image()
+        self.ax.plot([pt[0] for pt in temp_line], [pt[1] for pt in temp_line], 'r--')
+        self.canvas.draw()
 
     def on_mouse_release(self, event):
         if self.is_drawing and event.button == 1 and self.current_line:  # Left click release
             x, y = int(event.xdata), int(event.ydata)
             self.current_line.append((x, y))
-            self.draw_lines()
-
+            self.show_image()
 
     def semi_automatic_tracking(self, start_point, end_point):
         # Convert points to image coordinates
         start = (int(start_point[1]), int(start_point[0]))
-        end = (int(end_point[1]), int(end_point[0]))
+        goal = (int(end_point[1]), int(end_point[0]))
 
         # Use A* algorithm to find the path
-        path = self.a_star(self.edge_map, start, end)
+        path = self.a_star(self.edge_map, start, goal)
 
         if path:
             # Convert path back to display coordinates
             tracked_line = [(x, y) for y, x in path]
             self.lines.append(tracked_line)
-            self.draw_lines()
+            self.show_image()
         else:
-            QMessageBox.warning(self, "Path Not Found", "Could not find a path between the selected points. Try selecting closer points or adjusting the filter settings.")
+            QMessageBox.warning(self, "Path Not Found",
+                                "Could not find a path between the selected points. Try selecting closer points or adjusting the filter settings.")
+
     def create_edge_map(self):
         # Use the filtered image to create the edge map
-        blurred_image = gaussian_filter(self.filtered_image, sigma=2)
+        blurred_image = gaussian(self.filtered_image, sigma=2)
         edges = feature.canny(blurred_image, sigma=2)
-        return 1 - edges
+        return 1 - edges.astype(float)  # Invert for A* cost map
 
     def a_star(self, cost_map, start, goal):
         def heuristic(a, b):
             return np.hypot(b[0] - a[0], b[1] - a[1])
 
-        neighbors = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+        neighbors = [(0, 1), (0, -1), (1, 0), (-1, 0),
+                     (1, 1), (1, -1), (-1, 1), (-1, -1)]
 
         close_set = set()
         came_from = {}
@@ -413,13 +464,14 @@ class ManualInterpretationWindow(QDialog):
                     if neighbor in close_set:
                         continue
                     tentative_g_score = gscore[current] + cost_map[neighbor]
-                    if tentative_g_score < gscore.get(neighbor, np.inf):
+                    if tentative_g_score < gscore.get(neighbor, float('inf')):
                         came_from[neighbor] = current
                         gscore[neighbor] = tentative_g_score
-                        fscore[neighbor] = gscore[neighbor] + heuristic(neighbor, goal)
+                        fscore[neighbor] = tentative_g_score + heuristic(neighbor, goal)
                         heapq.heappush(oheap, (fscore[neighbor], neighbor))
 
         return None
+
     def edit_nearest_point(self, x, y):
         min_distance = float('inf')
         nearest_line = None
@@ -427,7 +479,7 @@ class ManualInterpretationWindow(QDialog):
 
         for i, line in enumerate(self.lines):
             for j, point in enumerate(line):
-                distance = np.sqrt((x - point[0])**2 + (y - point[1])**2)
+                distance = np.sqrt((x - point[0]) ** 2 + (y - point[1]) ** 2)
                 if distance < min_distance:
                     min_distance = distance
                     nearest_line = i
@@ -435,21 +487,33 @@ class ManualInterpretationWindow(QDialog):
 
         if nearest_line is not None and min_distance < 10:  # Threshold for selection
             self.lines[nearest_line][nearest_point_index] = (x, y)
-            self.draw_lines()
+            self.show_image()
 
-    def draw_lines(self, temp_line=None):
-        self.show_image()
+    def show_image_with_lines(self):
+        self.figure.clear()
+        self.ax = self.figure.add_subplot(111)
+        self.ax.imshow(self.image, cmap='gray')
+        self.ax.axis('off')
+
         for line in self.lines:
             if line and len(line) > 1:
                 x, y = zip(*line)
                 self.ax.plot(x, y, 'r-')
+
         if self.current_line and len(self.current_line) > 1:
             x, y = zip(*self.current_line)
-            self.ax.plot(x, y, 'r-')
+            self.ax.plot(x, y, 'r--')
+
+        self.canvas.draw()
+
+    def draw_lines(self, temp_line=None):
+        self.show_image_with_lines()
         if temp_line and len(temp_line) > 1:
             x, y = zip(*temp_line)
             self.ax.plot(x, y, 'r--')
-        self.canvas.draw()
+            self.canvas.draw()
+
+    # Optionally, remove or simplify redundant methods if the class is too large
 
 
 class LaplacianFilterTab(FilterTab):
@@ -708,9 +772,7 @@ class CannyFilterTab(FilterTab):
         self.filtered_image = cv2.Canny(image, self.threshold1.value(), self.threshold2.value())
 
     def open_manual_interpretation(self):
-        if self.filtered_image is not None:
-            self.manual_interpretation_window = ManualInterpretationWindow(self.filtered_image, self.parent())
-            self.manual_interpretation_window.show()
+        pass
 
 class SobelFilterTab(FilterTab):
     def __init__(self, parent=None):
@@ -740,9 +802,7 @@ class SobelFilterTab(FilterTab):
                                               cv2.convertScaleAbs(grad_y), 0.5, 0)
 
     def open_manual_interpretation(self):
-        if self.filtered_image is not None:
-            self.manual_interpretation_window = ManualInterpretationWindow(self.filtered_image, self.parent())
-            self.manual_interpretation_window.show()
+        pass
 
 class ShearletFilterTab(FilterTab):
     def __init__(self, parent=None):
@@ -774,9 +834,7 @@ class ShearletFilterTab(FilterTab):
             self.filtered_image = image.copy()
 
     def open_manual_interpretation(self):
-        if self.filtered_image is not None:
-            self.manual_interpretation_window = ManualInterpretationWindow(self.filtered_image, self.parent())
-            self.manual_interpretation_window.show()
+        pass
 
 
 class EdgeLinkWindow(QDialog):
@@ -1406,6 +1464,22 @@ class MyWindow(QMainWindow):
     def add_filter_tab(self, filter_name, filter_class):
         tab = filter_class(self)
         self.tab_widget.insertTab(self.tab_widget.count() - 1, tab, filter_name)
+
+    def open_manual_interpretation(self):
+        current_tab = self.tab_widget.currentWidget()
+        if isinstance(current_tab, FilterTab) and current_tab.filtered_image is not None:
+            self.manual_interpretation_window = ManualInterpretationWindow(
+                original_image=self.img,
+                filtered_image=current_tab.filtered_image,
+                parent=self
+            )
+            self.manual_interpretation_window.show()
+        else:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                "Please load an image and apply a filter first before using manual interpretation."
+            )
 
     def handle_tab_click(self, index):
         if self.tab_widget.tabText(index) == "+":
