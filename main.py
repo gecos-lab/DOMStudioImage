@@ -51,8 +51,10 @@ from PyQt5.QtGui import QImage, QPixmap, QPainterPath, QPen, QColor
 from PyQt5.QtCore import Qt, QPointF, QRectF
 
 from PyQt5.QtGui import QTransform
+from collections import deque
 
  # Define a NodeItem representing control points
+# Define a NodeItem representing control points
 class NodeItem(QGraphicsEllipseItem):
     def __init__(self, x, y, radius=5, parent=None):
         super().__init__(-radius, -radius, 2*radius, 2*radius, parent)
@@ -89,8 +91,10 @@ class LineItem(QGraphicsPathItem):
     def __init__(self, nodes=None, parent=None):
         super().__init__(parent)
         self.nodes = nodes if nodes else []
-        pen = QPen(QColor('red'))
-        pen.setWidth(2)
+        pen = QPen(QColor('green'))  # Changed color to green for better contrast
+        pen.setWidth(3)  # Increased width for better visibility
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
         self.setPen(pen)
         self.setFlags(
             QGraphicsItem.ItemIsSelectable  # Lines are selectable but not movable
@@ -128,6 +132,104 @@ class LineItem(QGraphicsPathItem):
         delete_action.triggered.connect(lambda: parent_window.delete_line(self))
         menu.addAction(delete_action)
         menu.exec_(event.screenPos())
+
+
+# class ImageProcessor:
+#     def __init__(self):
+#         pass
+# 
+#     def apply_filter(self, image, filter_type='sobel'):
+#         if filter_type == 'sobel':
+#             grad_x = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
+#             grad_y = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
+#             edge = cv2.magnitude(grad_x, grad_y)
+#         elif filter_type == 'laplacian':
+#             edge = cv2.Laplacian(image, cv2.CV_64F)
+#             edge = np.abs(edge)
+#         elif filter_type == 'roberts':
+#             kernelx = np.array([[1, 0],
+#                                 [0, -1]])
+#             kernely = np.array([[0, 1],
+#                                 [-1, 0]])
+#             grad_x = cv2.filter2D(image, cv2.CV_64F, kernelx)
+#             grad_y = cv2.filter2D(image, cv2.CV_64F, kernely)
+#             edge = cv2.magnitude(grad_x, grad_y)
+#         else:
+#             raise ValueError("Unsupported filter type.")
+# 
+#         # Normalize to 0-255
+#         edge = cv2.normalize(edge, None, 0, 255, cv2.NORM_MINMAX)
+#         edge = edge.astype(np.uint8)
+#         return edge
+# 
+#     def convert_to_binary(self, image, method='otsu'):
+#         if method == 'otsu':
+#             _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+#         elif method == 'adaptive':
+#             binary = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+#                                            cv2.THRESH_BINARY, 11, 2)
+#         else:
+#             raise ValueError("Unsupported binarization method.")
+#         return binary
+# 
+#     def apply_morphological_closing(self, binary_image, kernel_size=3, kernel_shape=cv2.MORPH_RECT):
+#         kernel = cv2.getStructuringElement(kernel_shape, (kernel_size, kernel_size))
+#         closed = cv2.morphologyEx(binary_image, cv2.MORPH_CLOSE, kernel)
+#         return closed
+# 
+#     def find_contours(self, binary_image):
+#         contours, _ = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+#         return contours
+# 
+#     def detect_edges_with_edgelink(self, image, filter_type='sobel',
+#                                    binarization_method='otsu', kernel_size=3, kernel_shape=cv2.MORPH_RECT):
+#         """
+#         Apply edge detection filter, convert to binary, apply morphological closing,
+#         and return the processed edge map.
+# 
+#         Parameters:
+#         - image: Grayscale input image.
+#         - filter_type: 'sobel', 'laplacian', or 'roberts'.
+#         - binarization_method: 'otsu' or 'adaptive'.
+#         - kernel_size: Size of the morphological kernel.
+#         - kernel_shape: Shape of the morphological kernel.
+# 
+#         Returns:
+#         - closed: Binary edge map after morphological closing.
+#         """
+#         # Step 1: Apply edge detection filter
+#         edge = self.apply_filter(image, filter_type)
+# 
+#         # Step 2: Convert edge image to binary
+#         binary = self.convert_to_binary(edge, binarization_method)
+# 
+#         # Step 3: Apply morphological closing to link edges
+#         closed = self.apply_morphological_closing(binary, kernel_size, kernel_shape)
+# 
+#         return closed
+# 
+#     def detect_edges_without_edgelink(self, image, filter_type='sobel',
+#                                       binarization_method='otsu'):
+#         """
+#         Apply edge detection filter and convert to binary without morphological processing.
+# 
+#         Parameters:
+#         - image: Grayscale input image.
+#         - filter_type: 'sobel', 'laplacian', or 'roberts'.
+#         - binarization_method: 'otsu' or 'adaptive'.
+# 
+#         Returns:
+#         - binary: Binary edge map without morphological closing.
+#         """
+#         # Step 1: Apply edge detection filter
+#         edge = self.apply_filter(image, filter_type)
+# 
+#         # Step 2: Convert edge image to binary
+#         binary = self.convert_to_binary(edge, binarization_method)
+# 
+#         return binary
+
+
 def parse_path(path_data):
     commands = re.findall(r'([MLHVCSQTAZ])([^MLHVCSQTAZ]*)', path_data.upper())
     points = []
@@ -321,6 +423,10 @@ class ManualInterpretationWindow(QDialog):
     def __init__(self, original_image, filtered_image, parent=None):
         super().__init__(parent)
 
+        # Validate input images
+        self.validate_image(original_image)
+        self.validate_image(filtered_image)
+
         # Initialize images
         self.original_image = original_image
         self.filtered_image = filtered_image
@@ -334,8 +440,9 @@ class ManualInterpretationWindow(QDialog):
         self.is_edit_mode = False
         self.semi_auto_start_point = None
 
-        # Create edge map for semi-automatic tracking
-        self.edge_map = self.create_edge_map()
+        # Initialize Undo/Redo stacks
+        self.undo_stack = deque()
+        self.redo_stack = deque()
 
         # Initialize UI
         self.initUI()
@@ -350,7 +457,7 @@ class ManualInterpretationWindow(QDialog):
         # Create QGraphicsScene and QGraphicsView
         self.scene = QGraphicsScene()
         self.view = QGraphicsView(self.scene)
-        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.view.setRenderHint(QPainter.Antialiasing)
         self.view.setDragMode(QGraphicsView.NoDrag)  # Ensure no interference with item interactions
         layout.addWidget(self.view)
 
@@ -363,9 +470,10 @@ class ManualInterpretationWindow(QDialog):
         # Fit the view to the scene
         self.view.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio)
 
-        # Control Buttons
+        # Control Buttons Layout
         button_layout = QHBoxLayout()
 
+        # Existing buttons
         self.toggle_drawing_button = QPushButton("Enable Manual Drawing")
         self.toggle_drawing_button.setCheckable(True)
         self.toggle_drawing_button.clicked.connect(self.toggle_drawing)
@@ -380,6 +488,30 @@ class ManualInterpretationWindow(QDialog):
         self.edit_mode_button.setCheckable(True)
         self.edit_mode_button.clicked.connect(self.toggle_edit_mode)
         button_layout.addWidget(self.edit_mode_button)
+
+        # **New Button: Enable/Disable Edgelink**
+        self.toggle_edgelink_button = QPushButton("Disable Edgelink")
+        self.toggle_edgelink_button.setCheckable(True)
+        self.toggle_edgelink_button.setChecked(True)  # Initially, edgelink is enabled
+        self.toggle_edgelink_button.clicked.connect(self.toggle_edgelink)
+        button_layout.addWidget(self.toggle_edgelink_button)
+
+        # **Existing Button: Show/Hide Nodes**
+        self.toggle_nodes_button = QPushButton("Hide Nodes")
+        self.toggle_nodes_button.setCheckable(True)
+        self.toggle_nodes_button.setChecked(True)  # Initially, nodes are visible
+        self.toggle_nodes_button.clicked.connect(self.toggle_nodes_visibility)
+        button_layout.addWidget(self.toggle_nodes_button)
+
+        # **Optional Enhancement: Undo and Redo Buttons**
+        undo_redo_layout = QHBoxLayout()
+        self.undo_button = QPushButton("Undo")
+        self.undo_button.clicked.connect(self.undo_action)
+        self.redo_button = QPushButton("Redo")
+        self.redo_button.clicked.connect(self.redo_action)
+        undo_redo_layout.addWidget(self.undo_button)
+        undo_redo_layout.addWidget(self.redo_button)
+        layout.addLayout(undo_redo_layout)
 
         layout.addLayout(button_layout)
 
@@ -400,24 +532,40 @@ class ManualInterpretationWindow(QDialog):
         self.pixmap_item.setZValue(0)  # Ensure it's at the back
         self.scene.addItem(self.pixmap_item)
 
+        # Ensure the scene's origin matches the image's origin
+        self.scene.setSceneRect(0, 0, width, height)
+
     def display_filtered_lines(self):
-        # Assuming filtered_image is a binary image
-        if self.filtered_image is not None:
-            # Simplify the contours to reduce the number of nodes
-            contours, _ = cv2.findContours(self.filtered_image, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-            for contour in contours:
-                if len(contour) >= 2:
-                    # Simplify the contour using approxPolyDP
-                    epsilon = 0.02 * cv2.arcLength(contour, True)  # Increased epsilon for more simplification
-                    approx = cv2.approxPolyDP(contour, epsilon, True)
-                    points = [(point[0][0], point[0][1]) for point in approx]
+        # Clear existing lines from the scene
+        for line in self.lines:
+            for node in line.nodes:
+                self.scene.removeItem(node)
+            self.scene.removeItem(line)
+        self.lines.clear()
 
-                    # Further reduce the number of points by sampling every nth point
-                    sampling_rate = 3  # Increased sampling rate to reduce nodes further
-                    sampled_points = points[::sampling_rate]
+        # Use the Edgelink class for edge linking
+        minlength = 10
+        edge_linker = edgelink(self.filtered_image, minlength)
+        edge_linker.get_edgelist()
+        edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
 
-                    if len(sampled_points) >= 2:
-                        self.add_line(sampled_points)
+        # Optionally post-process edge lists (e.g., using cleanedgelist)
+        processed_edge_lists = cleanedgelist(edge_lists, minlength)  # Adjust min_length as needed
+
+        self.edge_map = self.filtered_image  # Or assign appropriately based on your Edgelink implementation
+
+        # Add lines to the scene
+        for edge in processed_edge_lists:
+            if len(edge) >= 2:
+                # Simplify the edge if necessary
+                epsilon = 0.01 * cv2.arcLength(edge, True)
+                approx = cv2.approxPolyDP(edge, epsilon, True)
+                points = [(point[0][1], point[0][0]) for point in approx]
+
+                sampled_points = points  # Adjust sampling rate if needed
+
+                if len(sampled_points) >= 2:
+                    self.add_line(sampled_points)
 
     def add_line(self, points):
         line = LineItem()
@@ -431,6 +579,10 @@ class ManualInterpretationWindow(QDialog):
             self.scene.addItem(node)
             line.add_node(node)
 
+        # Record action for undo
+        self.undo_stack.append(('add_line', line))
+        self.redo_stack.clear()
+
     def toggle_drawing(self, checked):
         self.is_drawing = checked
         self.is_semi_auto = False
@@ -439,6 +591,10 @@ class ManualInterpretationWindow(QDialog):
         self.toggle_drawing_button.setText("Disable Manual Drawing" if self.is_drawing else "Enable Manual Drawing")
         self.toggle_semi_auto_button.setText("Enable Semi-Auto Drawing")
         self.edit_mode_button.setText("Enter Edit Mode")
+        self.toggle_edgelink_button.setChecked(True)
+        self.toggle_edgelink_button.setText("Disable Edgelink")
+        self.toggle_nodes_button.setChecked(True)
+        self.toggle_nodes_button.setText("Hide Nodes")
         self.show_overlay()
 
     def toggle_semi_auto(self, checked):
@@ -450,6 +606,10 @@ class ManualInterpretationWindow(QDialog):
             "Disable Semi-Auto Drawing" if self.is_semi_auto else "Enable Semi-Auto Drawing")
         self.toggle_drawing_button.setText("Enable Manual Drawing")
         self.edit_mode_button.setText("Enter Edit Mode")
+        self.toggle_edgelink_button.setChecked(True)
+        self.toggle_edgelink_button.setText("Disable Edgelink")
+        self.toggle_nodes_button.setChecked(True)
+        self.toggle_nodes_button.setText("Hide Nodes")
         self.show_overlay()
 
     def toggle_edit_mode(self, checked):
@@ -462,6 +622,161 @@ class ManualInterpretationWindow(QDialog):
         if self.is_edit_mode:
             QMessageBox.information(self, "Edit Mode",
                                     "Edit Mode Enabled.\nSelect and drag nodes to edit the lines.")
+        self.show_overlay()
+
+    # **New Method: Toggle Edgelink**
+    def toggle_edgelink(self, checked):
+        self.use_edgelink = not checked  # Toggle the state
+        self.toggle_edgelink_button.setText("Enable Edgelink" if not self.use_edgelink else "Disable Edgelink")
+        self.process_and_display_lines()
+
+    # **Existing Method: Toggle Nodes Visibility**
+    def toggle_nodes_visibility(self, checked):
+        # If checked, show nodes; else, hide them
+        if checked:
+            self.toggle_nodes_button.setText("Hide Nodes")
+        else:
+            self.toggle_nodes_button.setText("Show Nodes")
+
+        for line in self.lines:
+            for node in line.nodes:
+                node.setVisible(checked)
+
+    def image_to_lines(self, binary_image):
+        """
+        Converts a binary image into a list of lines using contour detection.
+
+        Parameters:
+            binary_image (numpy.ndarray): The binary image from which to extract lines.
+
+        Returns:
+            List[List[Tuple[int, int]]]: A list of lines, each represented as a list of (x, y) tuples.
+        """
+        # Find contours in the binary image
+        contours, hierarchy = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        lines = []
+        for contour in contours:
+            # Approximate the contour to reduce the number of points
+            epsilon = 0.01 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+
+            # Convert contour to list of (x, y) points
+            points = [(point[0][1], point[0][0]) for point in approx]
+            lines.append(points)
+
+        return lines
+    def process_and_display_lines(self):
+        # Clear existing lines from the scene
+        for line in self.lines:
+            for node in line.nodes:
+                self.scene.removeItem(node)
+            self.scene.removeItem(line)
+        self.lines.clear()
+
+        # Use the Edgelink class for edge linking
+        if self.use_edgelink:
+            minlength=10
+            edge_linker = edgelink(self.filtered_image, minlength)
+            edge_linker.get_edgelist()
+            edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
+            processed_edge_lists = cleanedgelist(edge_lists, minlength)  # Adjust min_length as needed
+        else:
+            # If edgelink is disabled, use the original filtered image
+            _, binary_image = cv2.threshold(self.filtered_image, 127, 255, cv2.THRESH_BINARY)
+            edge_lists = self.image_to_lines(binary_image)
+            processed_edge_lists = [np.array(edge) for edge in edge_lists if len(edge) > 0]
+
+        self.edge_map = self.filtered_image  # Or assign appropriately based on your Edgelink implementation
+
+        # Add lines to the scene
+        for edge in processed_edge_lists:
+            if len(edge) >= 2:
+                # Simplify the edge if necessary
+                epsilon = 0.01 * cv2.arcLength(edge, True)
+                approx = cv2.approxPolyDP(edge, epsilon, True)
+                points = [(point[0][1], point[0][0]) for point in approx]
+
+                sampled_points = points  # Adjust sampling rate if needed
+
+                if len(sampled_points) >= 2:
+                    self.add_line(sampled_points)
+
+    # **Optional Enhancement: Undo and Redo Methods**
+    def undo_action(self):
+        if not self.undo_stack:
+            return
+        action, obj = self.undo_stack.pop()
+        if action == 'add_line':
+            # Remove the line
+            for node in obj.nodes.copy():
+                self.scene.removeItem(node)
+            self.scene.removeItem(obj)
+            self.lines.remove(obj)
+            # Push to redo stack
+            self.redo_stack.append(('add_line', obj))
+        elif action == 'add_node':
+            # Remove the node
+            self.scene.removeItem(obj)
+            obj.lines[0].nodes.remove(obj)
+            # Push to redo stack
+            self.redo_stack.append(('add_node', obj))
+        elif action == 'delete_node':
+            # Re-add the node and reconnect lines
+            self.scene.addItem(obj)
+            for line in obj.lines:
+                line.add_node(obj)
+            self.lines.append(line)
+            # Push to redo stack
+            self.redo_stack.append(('delete_node', obj))
+        elif action == 'delete_line':
+            # Re-add the line and reconnect nodes
+            self.scene.addItem(obj)
+            for node in obj.nodes:
+                self.scene.addItem(node)
+                node.lines.append(obj)
+            self.lines.append(obj)
+            # Push to redo stack
+            self.redo_stack.append(('delete_line', obj))
+        self.show_overlay()
+
+    def redo_action(self):
+        if not self.redo_stack:
+            return
+        action, obj = self.redo_stack.pop()
+        if action == 'add_line':
+            # Re-add the line
+            self.scene.addItem(obj)
+            self.lines.append(obj)
+            for node in obj.nodes:
+                self.scene.addItem(node)
+                node.lines.append(obj)
+            # Push back to undo stack
+            self.undo_stack.append(('add_line', obj))
+        elif action == 'add_node':
+            # Re-add the node
+            self.scene.addItem(obj)
+            obj.lines[0].add_node(obj)
+            # Push back to undo stack
+            self.undo_stack.append(('add_node', obj))
+        elif action == 'delete_node':
+            # Remove the node again
+            for line in obj.lines.copy():
+                line.remove_node(obj)
+                if len(line.nodes) < 2:
+                    self.delete_line(line)
+            self.scene.removeItem(obj)
+            # Push back to undo stack
+            self.undo_stack.append(('delete_node', obj))
+        elif action == 'delete_line':
+            # Remove the line again
+            for node in obj.nodes.copy():
+                obj.remove_node(node)
+                self.scene.removeItem(node)
+            self.scene.removeItem(obj)
+            self.lines.remove(obj)
+            # Push back to undo stack
+            self.undo_stack.append(('delete_line', obj))
         self.show_overlay()
 
     def show_overlay(self):
@@ -483,9 +798,10 @@ class ManualInterpretationWindow(QDialog):
         # Highlight selected items
         for line in self.lines:
             if line.isSelected():
-                line.setPen(QPen(QColor('green'), 2))
+                line.setPen(QPen(QColor('green'), 3))  # Increased width for better visibility
             else:
-                line.setPen(QPen(QColor('red'), 2))
+                line.setPen(QPen(QColor('green'), 3))  # Keep consistent pen settings
+
             for node in line.nodes:
                 if node.isSelected():
                     node.setBrush(QColor('yellow'))
@@ -528,12 +844,20 @@ class ManualInterpretationWindow(QDialog):
             node.setZValue(2)  # Ensure nodes are above lines
             self.scene.addItem(node)
             self.current_line_item.add_node(node)
+
+            # Record action for undo
+            self.undo_stack.append(('add_line', self.current_line_item))
+            self.redo_stack.clear()
         else:
             # Add a node and update the line
             node = NodeItem(x, y, radius=5)
             node.setZValue(2)
             self.scene.addItem(node)
             self.current_line_item.add_node(node)
+
+            # Record action for undo
+            self.undo_stack.append(('add_node', node))
+            self.redo_stack.clear()
 
     def semi_automatic_tracking(self, start_point, end_point):
         # Use A* algorithm to find a path from start_point to end_point on the edge_map
@@ -549,12 +873,6 @@ class ManualInterpretationWindow(QDialog):
             QMessageBox.warning(self, "Path Not Found",
                                 "Could not find a path between the selected points. "
                                 "Try selecting closer points or adjusting the filter settings.")
-
-    def create_edge_map(self):
-        # Use the filtered image to create the edge map
-        blurred_image = gaussian_filter(self.filtered_image, sigma=2)
-        edges = feature.canny(blurred_image, sigma=2)
-        return 1 - edges.astype(float)  # Invert for A* cost map
 
     def a_star(self, cost_map, start, goal):
         def heuristic(a, b):
@@ -627,6 +945,10 @@ class ManualInterpretationWindow(QDialog):
         self.scene.removeItem(node)
         self.show_overlay()
 
+        # Record action for undo
+        self.undo_stack.append(('delete_node', node))
+        self.redo_stack.clear()
+
     def delete_line(self, line):
         for node in line.nodes:
             if line in node.lines:
@@ -635,6 +957,10 @@ class ManualInterpretationWindow(QDialog):
             self.lines.remove(line)
         self.scene.removeItem(line)
         self.show_overlay()
+
+        # Record action for undo
+        self.undo_stack.append(('delete_line', line))
+        self.redo_stack.clear()
 
     # Optional: Implement zoom functionality
     def wheelEvent(self, event):
@@ -652,6 +978,88 @@ class ManualInterpretationWindow(QDialog):
         # This method can be removed or kept empty to prevent the dialog from showing its own context menu
         pass
 
+    def validate_image(self, image):
+        if image is None:
+            raise ValueError("Invalid image. Please load a valid grayscale image.")
+        if len(image.shape) != 2:
+            raise ValueError("Image is not grayscale. Please load a grayscale image.")
+
+    # **Optional Enhancement: Undo and Redo Methods**
+    def undo_action(self):
+        if not self.undo_stack:
+            return
+        action, obj = self.undo_stack.pop()
+        if action == 'add_line':
+            # Remove the line
+            for node in obj.nodes.copy():
+                self.scene.removeItem(node)
+            self.scene.removeItem(obj)
+            self.lines.remove(obj)
+            # Push to redo stack
+            self.redo_stack.append(('add_line', obj))
+        elif action == 'add_node':
+            # Remove the node
+            self.scene.removeItem(obj)
+            obj.lines[0].nodes.remove(obj)
+            # Push to redo stack
+            self.redo_stack.append(('add_node', obj))
+        elif action == 'delete_node':
+            # Re-add the node and reconnect lines
+            self.scene.addItem(obj)
+            for line in obj.lines:
+                line.add_node(obj)
+            self.lines.append(line)
+            # Push to redo stack
+            self.redo_stack.append(('delete_node', obj))
+        elif action == 'delete_line':
+            # Re-add the line and reconnect nodes
+            self.scene.addItem(obj)
+            for node in obj.nodes:
+                self.scene.addItem(node)
+                node.lines.append(obj)
+            self.lines.append(obj)
+            # Push to redo stack
+            self.redo_stack.append(('delete_line', obj))
+        self.show_overlay()
+
+    def redo_action(self):
+        if not self.redo_stack:
+            return
+        action, obj = self.redo_stack.pop()
+        if action == 'add_line':
+            # Re-add the line
+            self.scene.addItem(obj)
+            self.lines.append(obj)
+            for node in obj.nodes:
+                self.scene.addItem(node)
+                node.lines.append(obj)
+            # Push back to undo stack
+            self.undo_stack.append(('add_line', obj))
+        elif action == 'add_node':
+            # Re-add the node
+            self.scene.addItem(obj)
+            obj.lines[0].add_node(obj)
+            # Push back to undo stack
+            self.undo_stack.append(('add_node', obj))
+        elif action == 'delete_node':
+            # Remove the node again
+            for line in obj.lines.copy():
+                line.remove_node(obj)
+                if len(line.nodes) < 2:
+                    self.delete_line(line)
+            self.scene.removeItem(obj)
+            # Push back to undo stack
+            self.undo_stack.append(('delete_node', obj))
+        elif action == 'delete_line':
+            # Remove the line again
+            for node in obj.nodes.copy():
+                obj.remove_node(node)
+                self.scene.removeItem(node)
+            self.scene.removeItem(obj)
+            self.lines.remove(obj)
+            # Push back to undo stack
+            self.undo_stack.append(('delete_line', obj))
+        self.show_overlay()
 class LaplacianFilterTab(FilterTab):
     def __init__(self, parent=None):
         # Initialize subclass-specific attributes **before** calling the base class
