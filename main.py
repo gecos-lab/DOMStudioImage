@@ -72,6 +72,17 @@ class NodeItem(QGraphicsEllipseItem):
                 line.update_path()
         return super().itemChange(change, value)
 
+    def contextMenuEvent(self, event):
+        # Access the parent ManualInterpretationWindow
+        parent_window = self.scene().parent()
+        if not isinstance(parent_window, ManualInterpretationWindow):
+            return
+
+        menu = QMenu()
+        delete_action = QAction('Delete Node', self)
+        delete_action.triggered.connect(lambda: parent_window.delete_node(self))
+        menu.addAction(delete_action)
+        menu.exec_(event.screenPos())
 
 # Define a LineItem representing lines composed of nodes
 class LineItem(QGraphicsPathItem):
@@ -84,6 +95,7 @@ class LineItem(QGraphicsPathItem):
         self.setFlags(
             QGraphicsItem.ItemIsSelectable  # Lines are selectable but not movable
         )
+        self.setZValue(1)  # Ensure lines are above the background
         self.update_path()
 
     def update_path(self):
@@ -104,6 +116,18 @@ class LineItem(QGraphicsPathItem):
             self.nodes.remove(node)
             node.lines.remove(self)
             self.update_path()
+
+    def contextMenuEvent(self, event):
+        # Access the parent ManualInterpretationWindow
+        parent_window = self.scene().parent()
+        if not isinstance(parent_window, ManualInterpretationWindow):
+            return
+
+        menu = QMenu()
+        delete_action = QAction('Delete Line', self)
+        delete_action.triggered.connect(lambda: parent_window.delete_line(self))
+        menu.addAction(delete_action)
+        menu.exec_(event.screenPos())
 def parse_path(path_data):
     commands = re.findall(r'([MLHVCSQTAZ])([^MLHVCSQTAZ]*)', path_data.upper())
     points = []
@@ -336,6 +360,9 @@ class ManualInterpretationWindow(QDialog):
         # Overlay filtered lines as LineItems
         self.display_filtered_lines()
 
+        # Fit the view to the scene
+        self.view.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio)
+
         # Control Buttons
         button_layout = QHBoxLayout()
 
@@ -438,7 +465,7 @@ class ManualInterpretationWindow(QDialog):
         self.show_overlay()
 
     def show_overlay(self):
-        # Update the scene to reflect edit mode and highlight selected items
+        # Update the scene to reflect edit mode
         for line in self.lines:
             line.setFlags(QGraphicsItem.ItemIsSelectable)  # Lines are selectable but not movable
 
@@ -516,6 +543,8 @@ class ManualInterpretationWindow(QDialog):
             # Convert path to list of (x, y) tuples
             tracked_line = [(point[1], point[0]) for point in path]  # Swap to (x, y)
             self.add_line(tracked_line)
+            # Fit view to include the new line
+            self.view.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio)
         else:
             QMessageBox.warning(self, "Path Not Found",
                                 "Could not find a path between the selected points. "
@@ -590,28 +619,13 @@ class ManualInterpretationWindow(QDialog):
             nearest_line.setSelected(True)
             self.show_overlay()
 
-    
-    def contextMenuEvent(self, event):
-        item = self.scene.itemAt(self.view.mapToScene(event.pos()), QTransform())
-        if isinstance(item, NodeItem):
-            menu = QMenu()
-            delete_action = QAction('Delete Node', self)
-            delete_action.triggered.connect(lambda: self.delete_node(item))
-            menu.addAction(delete_action)
-            menu.exec_(event.globalPos())
-        elif isinstance(item, LineItem):
-            menu = QMenu()
-            delete_action = QAction('Delete Line', self)
-            delete_action.triggered.connect(lambda: self.delete_line(item))
-            menu.addAction(delete_action)
-            menu.exec_(event.globalPos())
-
     def delete_node(self, node):
         for line in node.lines.copy():
             line.remove_node(node)
             if len(line.nodes) < 2:
                 self.delete_line(line)
         self.scene.removeItem(node)
+        self.show_overlay()
 
     def delete_line(self, line):
         for node in line.nodes:
@@ -620,6 +634,24 @@ class ManualInterpretationWindow(QDialog):
         if line in self.lines:
             self.lines.remove(line)
         self.scene.removeItem(line)
+        self.show_overlay()
+
+    # Optional: Implement zoom functionality
+    def wheelEvent(self, event):
+        zoom_in_factor = 1.25
+        zoom_out_factor = 1 / zoom_in_factor
+
+        if event.angleDelta().y() > 0:
+            zoom_factor = zoom_in_factor
+        else:
+            zoom_factor = zoom_out_factor
+
+        self.view.scale(zoom_factor, zoom_factor)
+
+    def contextMenuEvent(self, event):
+        # This method can be removed or kept empty to prevent the dialog from showing its own context menu
+        pass
+
 class LaplacianFilterTab(FilterTab):
     def __init__(self, parent=None):
         # Initialize subclass-specific attributes **before** calling the base class
