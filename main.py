@@ -56,7 +56,7 @@ from collections import deque
  # Define a NodeItem representing control points
 # Define a NodeItem representing control points
 class NodeItem(QGraphicsEllipseItem):
-    def __init__(self, x, y, radius=5, parent=None):
+    def __init__(self, x, y, radius=3, parent=None):
         super().__init__(-radius, -radius, 2*radius, 2*radius, parent)
         self.setPos(x, y)
         self.setBrush(QColor('blue'))
@@ -92,7 +92,7 @@ class LineItem(QGraphicsPathItem):
         super().__init__(parent)
         self.nodes = nodes if nodes else []
         pen = QPen(QColor('green'))  # Changed color to green for better contrast
-        pen.setWidth(3)  # Increased width for better visibility
+        pen.setWidth(1)  # Increased width for better visibility
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         self.setPen(pen)
@@ -492,7 +492,7 @@ class ManualInterpretationWindow(QDialog):
         # **New Button: Enable/Disable Edgelink**
         self.toggle_edgelink_button = QPushButton("Disable Edgelink")
         self.toggle_edgelink_button.setCheckable(True)
-        self.toggle_edgelink_button.setChecked(True)  # Initially, edgelink is enabled
+        self.toggle_edgelink_button.setChecked(False)  # Initially, edgelink is enabled
         self.toggle_edgelink_button.clicked.connect(self.toggle_edgelink)
         button_layout.addWidget(self.toggle_edgelink_button)
 
@@ -544,7 +544,7 @@ class ManualInterpretationWindow(QDialog):
         self.lines.clear()
 
         # Use the Edgelink class for edge linking
-        minlength = 10
+        minlength = 6
         edge_linker = edgelink(self.filtered_image, minlength)
         edge_linker.get_edgelist()
         edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
@@ -666,7 +666,7 @@ class ManualInterpretationWindow(QDialog):
             lines.append(points)
 
         return lines
-    def process_and_display_lines(self):
+    def process_and_display_lines(self): # New method for processing and displaying lines
         # Clear existing lines from the scene
         for line in self.lines:
             for node in line.nodes:
@@ -676,7 +676,7 @@ class ManualInterpretationWindow(QDialog):
 
         # Use the Edgelink class for edge linking
         if self.use_edgelink:
-            minlength=10
+            minlength=6
             edge_linker = edgelink(self.filtered_image, minlength)
             edge_linker.get_edgelist()
             edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
