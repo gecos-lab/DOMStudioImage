@@ -2027,12 +2027,32 @@ class MyWindow(QMainWindow):
 
     def handle_tab_click(self, index):
         if self.tab_widget.tabText(index) == "+":
-            filter_name, ok = QInputDialog.getText(self, "New Filter", "Enter filter name:")
+            filters = [
+                "Canny",
+                "Sobel",
+                "Shearlet",
+                "Laplacian",
+                "Roberts",
+                "Gabor Filter"
+            ]
+            filter_name, ok = QInputDialog.getItem(self, "Select Filter", "Choose a filter:", filters, 0, False)
             if ok and filter_name:
-                # For simplicity, we'll add a generic FilterTab. Customize as needed.
-                new_filter = FilterTab(self)
-                new_filter.setWindowTitle(filter_name)
-                self.tab_widget.insertTab(index, new_filter, filter_name)
+                filter_classes = {
+                    "Canny": CannyFilterTab,
+                    "Sobel": SobelFilterTab,
+                    "Shearlet": ShearletFilterTab,
+                    "Laplacian": LaplacianFilterTab,
+                    "Roberts": RobertsFilterTab,
+                    "Gabor Filter": GaborFilterTab
+                }
+                filter_class = filter_classes.get(filter_name)
+                if filter_class:
+                    new_filter = filter_class(self)
+                    new_filter.setWindowTitle(filter_name)
+                    self.tab_widget.insertTab(index, new_filter, filter_name)
+                    self.tab_widget.setCurrentIndex(index)
+                else:
+                    QMessageBox.warning(self, "Error", f"Unknown filter: {filter_name}")
 
     def load_image(self):
         img_path, _ = QFileDialog.getOpenFileName(self, "Open Image File", "",
