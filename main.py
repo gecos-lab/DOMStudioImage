@@ -1169,7 +1169,7 @@ class HEDFilterTab(FilterTab):
         self.side_output_combo = QComboBox()
         self.side_output_combo.addItems(['Combined', '1', '2', '3', '4', '5'])
         self.side_output_combo.setCurrentText('Combined')
-        self.side_output_combo.currentIndexChanged.connect(self.apply_filter)
+        self.side_output_combo.currentIndexChanged.connect(self.on_side_output_changed)
         side_output_layout.addWidget(side_output_label)
         side_output_layout.addWidget(self.side_output_combo)
         self.controls_layout.addLayout(side_output_layout)
@@ -1178,6 +1178,9 @@ class HEDFilterTab(FilterTab):
         self.threshold = 50  # Default threshold value
         self.create_threshold_slider()
 
+    def on_side_output_changed(self, index):
+        # index is the new index of the combo box, but we don't need it here
+        self.apply_filter()
     def create_threshold_slider(self):
         threshold_layout = QHBoxLayout()
         threshold_label = QLabel("Threshold:")
@@ -1228,7 +1231,7 @@ class HEDFilterTab(FilterTab):
                 )
                 self.model = None
 
-    def apply_filter(self, image=None):
+    def apply_filter(self, image=None, *args, **kwargs):
         if self.input_image is None or self.model is None:
             print("Input image or model is None, cannot apply filter")
             return
