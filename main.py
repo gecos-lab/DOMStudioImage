@@ -52,7 +52,7 @@ from PyQt5.QtCore import Qt, QPointF, QRectF
 
 from PyQt5.QtGui import QTransform
 from collections import deque
-
+import torch
  # Define a NodeItem representing control points
 # Define a NodeItem representing control points
 class NodeItem(QGraphicsEllipseItem):
@@ -134,100 +134,178 @@ class LineItem(QGraphicsPathItem):
         menu.exec_(event.screenPos())
 
 
-# class ImageProcessor:
-#     def __init__(self):
-#         pass
-# 
-#     def apply_filter(self, image, filter_type='sobel'):
-#         if filter_type == 'sobel':
-#             grad_x = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
-#             grad_y = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
-#             edge = cv2.magnitude(grad_x, grad_y)
-#         elif filter_type == 'laplacian':
-#             edge = cv2.Laplacian(image, cv2.CV_64F)
-#             edge = np.abs(edge)
-#         elif filter_type == 'roberts':
-#             kernelx = np.array([[1, 0],
-#                                 [0, -1]])
-#             kernely = np.array([[0, 1],
-#                                 [-1, 0]])
-#             grad_x = cv2.filter2D(image, cv2.CV_64F, kernelx)
-#             grad_y = cv2.filter2D(image, cv2.CV_64F, kernely)
-#             edge = cv2.magnitude(grad_x, grad_y)
-#         else:
-#             raise ValueError("Unsupported filter type.")
-# 
-#         # Normalize to 0-255
-#         edge = cv2.normalize(edge, None, 0, 255, cv2.NORM_MINMAX)
-#         edge = edge.astype(np.uint8)
-#         return edge
-# 
-#     def convert_to_binary(self, image, method='otsu'):
-#         if method == 'otsu':
-#             _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-#         elif method == 'adaptive':
-#             binary = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-#                                            cv2.THRESH_BINARY, 11, 2)
-#         else:
-#             raise ValueError("Unsupported binarization method.")
-#         return binary
-# 
-#     def apply_morphological_closing(self, binary_image, kernel_size=3, kernel_shape=cv2.MORPH_RECT):
-#         kernel = cv2.getStructuringElement(kernel_shape, (kernel_size, kernel_size))
-#         closed = cv2.morphologyEx(binary_image, cv2.MORPH_CLOSE, kernel)
-#         return closed
-# 
-#     def find_contours(self, binary_image):
-#         contours, _ = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-#         return contours
-# 
-#     def detect_edges_with_edgelink(self, image, filter_type='sobel',
-#                                    binarization_method='otsu', kernel_size=3, kernel_shape=cv2.MORPH_RECT):
-#         """
-#         Apply edge detection filter, convert to binary, apply morphological closing,
-#         and return the processed edge map.
-# 
-#         Parameters:
-#         - image: Grayscale input image.
-#         - filter_type: 'sobel', 'laplacian', or 'roberts'.
-#         - binarization_method: 'otsu' or 'adaptive'.
-#         - kernel_size: Size of the morphological kernel.
-#         - kernel_shape: Shape of the morphological kernel.
-# 
-#         Returns:
-#         - closed: Binary edge map after morphological closing.
-#         """
-#         # Step 1: Apply edge detection filter
-#         edge = self.apply_filter(image, filter_type)
-# 
-#         # Step 2: Convert edge image to binary
-#         binary = self.convert_to_binary(edge, binarization_method)
-# 
-#         # Step 3: Apply morphological closing to link edges
-#         closed = self.apply_morphological_closing(binary, kernel_size, kernel_shape)
-# 
-#         return closed
-# 
-#     def detect_edges_without_edgelink(self, image, filter_type='sobel',
-#                                       binarization_method='otsu'):
-#         """
-#         Apply edge detection filter and convert to binary without morphological processing.
-# 
-#         Parameters:
-#         - image: Grayscale input image.
-#         - filter_type: 'sobel', 'laplacian', or 'roberts'.
-#         - binarization_method: 'otsu' or 'adaptive'.
-# 
-#         Returns:
-#         - binary: Binary edge map without morphological closing.
-#         """
-#         # Step 1: Apply edge detection filter
-#         edge = self.apply_filter(image, filter_type)
-# 
-#         # Step 2: Convert edge image to binary
-#         binary = self.convert_to_binary(edge, binarization_method)
-# 
-#         return binary
+class Network(torch.nn.Module): # Neural Network for Hessian Edge Detection
+    def __init__(self):
+        super().__init__()
+
+        self.netVggOne = torch.nn.Sequential(
+            torch.nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False),
+            torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False)
+        )
+
+        self.netVggTwo = torch.nn.Sequential(
+            torch.nn.MaxPool2d(kernel_size=2, stride=2),
+            torch.nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False),
+            torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False)
+        )
+
+        self.netVggThr = torch.nn.Sequential(
+            torch.nn.MaxPool2d(kernel_size=2, stride=2),
+            torch.nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False),
+            torch.nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False),
+            torch.nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False)
+        )
+
+        self.netVggFou = torch.nn.Sequential(
+            torch.nn.MaxPool2d(kernel_size=2, stride=2),
+            torch.nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False),
+            torch.nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False),
+            torch.nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False)
+        )
+
+        self.netVggFiv = torch.nn.Sequential(
+            torch.nn.MaxPool2d(kernel_size=2, stride=2),
+            torch.nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False),
+            torch.nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False),
+            torch.nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, stride=1, padding=1),
+            torch.nn.ReLU(inplace=False)
+        )
+
+        self.netScoreOne = torch.nn.Conv2d(in_channels=64, out_channels=1, kernel_size=1, stride=1, padding=0)
+        self.netScoreTwo = torch.nn.Conv2d(in_channels=128, out_channels=1, kernel_size=1, stride=1, padding=0)
+        self.netScoreThr = torch.nn.Conv2d(in_channels=256, out_channels=1, kernel_size=1, stride=1, padding=0)
+        self.netScoreFou = torch.nn.Conv2d(in_channels=512, out_channels=1, kernel_size=1, stride=1, padding=0)
+        self.netScoreFiv = torch.nn.Conv2d(in_channels=512, out_channels=1, kernel_size=1, stride=1, padding=0)
+
+        self.netCombine = torch.nn.Sequential(
+            torch.nn.Conv2d(in_channels=5, out_channels=1, kernel_size=1, stride=1, padding=0),
+            torch.nn.Sigmoid()
+        )
+    # end
+
+    def forward(self, tenInput):
+        tenInput = tenInput * 255.0
+        tenInput = tenInput - torch.tensor(
+            data=[104.00698793, 116.66876762, 122.67891434],
+            dtype=tenInput.dtype,
+            device=tenInput.device
+        ).view(1, 3, 1, 1)
+
+        tenVggOne = self.netVggOne(tenInput)
+        tenVggTwo = self.netVggTwo(tenVggOne)
+        tenVggThr = self.netVggThr(tenVggTwo)
+        tenVggFou = self.netVggFou(tenVggThr)
+        tenVggFiv = self.netVggFiv(tenVggFou)
+
+        tenScoreOne = self.netScoreOne(tenVggOne)
+        tenScoreTwo = self.netScoreTwo(tenVggTwo)
+        tenScoreThr = self.netScoreThr(tenVggThr)
+        tenScoreFou = self.netScoreFou(tenVggFou)
+        tenScoreFiv = self.netScoreFiv(tenVggFiv)
+
+        tenScoreOne = torch.nn.functional.interpolate(
+            input=tenScoreOne,
+            size=(tenInput.shape[2], tenInput.shape[3]),
+            mode='bilinear',
+            align_corners=False
+        )
+        tenScoreTwo = torch.nn.functional.interpolate(
+            input=tenScoreTwo,
+            size=(tenInput.shape[2], tenInput.shape[3]),
+            mode='bilinear',
+            align_corners=False
+        )
+        tenScoreThr = torch.nn.functional.interpolate(
+            input=tenScoreThr,
+            size=(tenInput.shape[2], tenInput.shape[3]),
+            mode='bilinear',
+            align_corners=False
+        )
+        tenScoreFou = torch.nn.functional.interpolate(
+            input=tenScoreFou,
+            size=(tenInput.shape[2], tenInput.shape[3]),
+            mode='bilinear',
+            align_corners=False
+        )
+        tenScoreFiv = torch.nn.functional.interpolate(
+            input=tenScoreFiv,
+            size=(tenInput.shape[2], tenInput.shape[3]),
+            mode='bilinear',
+            align_corners=False
+        )
+
+        return self.netCombine(torch.cat([
+            tenScoreOne,
+            tenScoreTwo,
+            tenScoreThr,
+            tenScoreFou,
+            tenScoreFiv
+        ], 1))
+    # end
+    def forward_side(self, tenInput):
+        tenInput = tenInput * 255.0
+        tenInput = tenInput - torch.tensor(
+            data=[104.00698793, 116.66876762, 122.67891434],
+            dtype=tenInput.dtype,
+            device=tenInput.device
+        ).view(1, 3, 1, 1)
+
+        tenVggOne = self.netVggOne(tenInput)
+        tenVggTwo = self.netVggTwo(tenVggOne)
+        tenVggThr = self.netVggThr(tenVggTwo)
+        tenVggFou = self.netVggFou(tenVggThr)
+        tenVggFiv = self.netVggFiv(tenVggFou)
+
+        tenScoreOne = self.netScoreOne(tenVggOne)
+        tenScoreTwo = self.netScoreTwo(tenVggTwo)
+        tenScoreThr = self.netScoreThr(tenVggThr)
+        tenScoreFou = self.netScoreFou(tenVggFou)
+        tenScoreFiv = self.netScoreFiv(tenVggFiv)
+
+        tenScoreOne = torch.nn.functional.interpolate(
+            input=tenScoreOne,
+            size=(tenInput.shape[2], tenInput.shape[3]),
+            mode='bilinear',
+            align_corners=False
+        )
+        tenScoreTwo = torch.nn.functional.interpolate(
+            input=tenScoreTwo,
+            size=(tenInput.shape[2], tenInput.shape[3]),
+            mode='bilinear',
+            align_corners=False
+        )
+        tenScoreThr = torch.nn.functional.interpolate(
+            input=tenScoreThr,
+            size=(tenInput.shape[2], tenInput.shape[3]),
+            mode='bilinear',
+            align_corners=False
+        )
+        tenScoreFou = torch.nn.functional.interpolate(
+            input=tenScoreFou,
+            size=(tenInput.shape[2], tenInput.shape[3]),
+            mode='bilinear',
+            align_corners=False
+        )
+        tenScoreFiv = torch.nn.functional.interpolate(
+            input=tenScoreFiv,
+            size=(tenInput.shape[2], tenInput.shape[3]),
+            mode='bilinear',
+            align_corners=False
+        )
+
+        return [tenScoreOne, tenScoreTwo, tenScoreThr, tenScoreFou, tenScoreFiv]
 
 
 def parse_path(path_data):
@@ -1060,6 +1138,184 @@ class ManualInterpretationWindow(QDialog):
             # Push back to undo stack
             self.undo_stack.append(('delete_line', obj))
         self.show_overlay()
+
+class HEDFilterTab(FilterTab):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("HED Filter")
+        self.model = None
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.available_models = ['bsds500', 'pascal']  # Add other models if available
+        self.selected_model = 'bsds500'  # Default model
+        self.current_model = None  # Keep track of the current model loaded
+        self.create_controls()
+        self.init_model()
+
+    def create_controls(self):
+        # Add model selection combo box
+        model_layout = QHBoxLayout()
+        model_label = QLabel("Model:")
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(self.available_models)
+        self.model_combo.setCurrentText(self.selected_model)
+        self.model_combo.currentIndexChanged.connect(self.update_model)
+        model_layout.addWidget(model_label)
+        model_layout.addWidget(self.model_combo)
+        self.controls_layout.addLayout(model_layout)
+
+        # Add side output selection
+        side_output_layout = QHBoxLayout()
+        side_output_label = QLabel("Side Output:")
+        self.side_output_combo = QComboBox()
+        self.side_output_combo.addItems(['Combined', '1', '2', '3', '4', '5'])
+        self.side_output_combo.setCurrentText('Combined')
+        self.side_output_combo.currentIndexChanged.connect(self.apply_filter)
+        side_output_layout.addWidget(side_output_label)
+        side_output_layout.addWidget(self.side_output_combo)
+        self.controls_layout.addLayout(side_output_layout)
+
+        # Add threshold slider
+        self.threshold = 50  # Default threshold value
+        self.create_threshold_slider()
+
+    def create_threshold_slider(self):
+        threshold_layout = QHBoxLayout()
+        threshold_label = QLabel("Threshold:")
+        self.threshold_slider = QSlider(Qt.Horizontal)
+        self.threshold_slider.setRange(0, 255)
+        self.threshold_slider.setValue(self.threshold)
+        self.threshold_slider.valueChanged.connect(self.update_threshold)
+        self.threshold_value_label = QLabel(str(self.threshold))
+        threshold_layout.addWidget(threshold_label)
+        threshold_layout.addWidget(self.threshold_slider)
+        threshold_layout.addWidget(self.threshold_value_label)
+        self.controls_layout.addLayout(threshold_layout)
+
+    def update_threshold(self, value):
+        self.threshold = value
+        self.threshold_value_label.setText(str(value))
+        self.apply_filter()
+
+    def update_model(self):
+        self.selected_model = self.model_combo.currentText()
+        self.init_model()
+        self.apply_filter()
+
+    def init_model(self):
+        if self.model is None or self.current_model != self.selected_model:
+            try:
+                self.current_model = self.selected_model
+                QMessageBox.information(
+                    self, "Loading Model",
+                    f"Loading HED model '{self.selected_model}'. Please wait..."
+                )
+                self.model = Network().to(self.device).eval()
+                # Load pre-trained weights
+                model_url = f'http://content.sniklaus.com/github/pytorch-hed/network-{self.selected_model}.pytorch'
+                state_dict = torch.hub.load_state_dict_from_url(
+                    url=model_url,
+                    file_name=f'hed-{self.selected_model}'
+                )
+                state_dict = {
+                    strKey.replace('module', 'net'): tenWeight
+                    for strKey, tenWeight in state_dict.items()
+                }
+                self.model.load_state_dict(state_dict)
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Error",
+                    f"Failed to load HED model '{self.selected_model}': {str(e)}"
+                )
+                self.model = None
+
+    def apply_filter(self, image=None):
+        if self.input_image is None or self.model is None:
+            print("Input image or model is None, cannot apply filter")
+            return
+
+        if image is None:
+            image = self.input_image
+
+        if image is None or not hasattr(image, 'shape') or len(image.shape) < 2:
+            print("Invalid image provided to apply_filter")
+            return
+
+        height, width = image.shape[:2]
+        print(f"Original image dimensions - width: {width}, height: {height}")
+        if height == 0 or width == 0:
+            print("Image has zero dimensions, cannot proceed")
+            return
+
+        # Use the blurred image if Gaussian filter is applied
+        if self.gaussian_checkbox.isChecked():
+            sigma = self.gaussian_sigma.value() / 10.0
+            blurred_image = cv2.GaussianBlur(image, (0, 0), sigma)
+        else:
+            blurred_image = image
+
+        # Convert grayscale to RGB
+        image_rgb = cv2.cvtColor(blurred_image, cv2.COLOR_GRAY2RGB)
+
+        # Resize the image to 1024x1024 as expected by the model
+        model_input_size = (1024, 1024)
+        image_rgb_resized = cv2.resize(image_rgb, model_input_size)
+
+        # Convert to tensor
+        np_image = image_rgb_resized[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) * (1.0 / 255.0)
+        tenInput = torch.FloatTensor(np.ascontiguousarray(np_image))
+        tenInput = tenInput.to(self.device).unsqueeze(0)
+
+        # Run the model
+        with torch.no_grad():
+            tenInput = tenInput * 255.0
+            tenInput = tenInput - torch.tensor(
+                data=[104.00698793, 116.66876762, 122.67891434],
+                dtype=tenInput.dtype,
+                device=tenInput.device
+            ).view(1, 3, 1, 1)
+
+            # Inside apply_filter
+            if self.side_output_combo.currentText() == 'Combined':
+                output = self.model(tenInput)[0].cpu().numpy()
+                print(f"Combined output shape: {output.shape}")
+            else:
+                side_outputs = self.model.forward_side(tenInput)
+                side_index = int(self.side_output_combo.currentText()) - 1
+                output_tensor = side_outputs[side_index]
+                print(f"Side output {side_index + 1} tensor shape: {output_tensor.shape}")
+                output = output_tensor.cpu().numpy()[0, 0, :, :]
+                print(f"Extracted output shape: {output.shape}")
+        # print(f"Side output {side_index + 1} tensor shape: {output_tensor.shape}")
+        # print(f"Extracted output shape: {output.shape}")
+        # Post-process the output
+        edge_prob_map = np.clip(output, 0.0, 1.0)
+        # print(f"edge_prob_map.shape: {edge_prob_map.shape}")
+
+        # Apply threshold
+        threshold_normalized = self.threshold / 255.0
+        edge_binary = (edge_prob_map >= threshold_normalized).astype(np.uint8) * 255
+        # print(f"edge_binary.shape: {edge_binary.shape}")
+
+        # Remove extra dimensions
+        edge_binary = np.squeeze(edge_binary)
+        # print(f"edge_binary.shape after squeeze: {edge_binary.shape}")
+
+        # Apply skeletonization if enabled
+        if self.skeletonize_checkbox.isChecked():
+            edge_binary = self.apply_skeletonization(edge_binary)
+
+        # Resize back to original image size
+        # print(f"Resizing edge map to width: {width}, height: {height}")
+        edge_map_resized = cv2.resize(
+            edge_binary,
+            (width, height),  # Ensure correct order
+            interpolation=cv2.INTER_NEAREST
+        )
+
+        self.filtered_image = edge_map_resized
+        self.show_filtered_image()
+
+
 class LaplacianFilterTab(FilterTab):
     def __init__(self, parent=None):
         # Initialize subclass-specific attributes **before** calling the base class
@@ -2033,7 +2289,8 @@ class MyWindow(QMainWindow):
                 "Shearlet",
                 "Laplacian",
                 "Roberts",
-                "Gabor Filter"
+                "Gabor Filter",
+                "HED"  # Add HED to the list
             ]
             filter_name, ok = QInputDialog.getItem(self, "Select Filter", "Choose a filter:", filters, 0, False)
             if ok and filter_name:
@@ -2043,7 +2300,8 @@ class MyWindow(QMainWindow):
                     "Shearlet": ShearletFilterTab,
                     "Laplacian": LaplacianFilterTab,
                     "Roberts": RobertsFilterTab,
-                    "Gabor Filter": GaborFilterTab
+                    "Gabor Filter": GaborFilterTab,
+                    "HED": HEDFilterTab  # Map "HED" to HEDFilterTab
                 }
                 filter_class = filter_classes.get(filter_name)
                 if filter_class:
