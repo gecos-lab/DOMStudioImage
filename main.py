@@ -1419,133 +1419,6 @@ class RobertsFilterTab(FilterTab):
         self.show_filtered_image()
 
 
-class GaborFilterTab(FilterTab):
-    def __init__(self, parent=None):
-        # Initialize Gabor filter parameters before calling super().__init__()
-        self.theta = 45  # in degrees
-        self.lambd = 10  # wavelength
-        self.sigma = 5  # standard deviation
-        self.gamma = 0.5  # spatial aspect ratio
-        super().__init__(parent)
-        self.setWindowTitle("Gabor Filter")
-
-    def create_filter_controls(self):
-        # Theta (Orientation) slider
-        theta_layout = QHBoxLayout()
-        theta_label = QLabel("Theta (°):")
-        self.theta_slider = QSlider(Qt.Horizontal)
-        self.theta_slider.setRange(0, 180)
-        self.theta_slider.setValue(self.theta)
-        self.theta_slider.setTickInterval(30)
-        self.theta_slider.setTickPosition(QSlider.TicksBelow)
-        self.theta_slider.valueChanged.connect(self.update_theta)
-        self.theta_value_label = QLabel(str(self.theta))
-
-        theta_layout.addWidget(theta_label)
-        theta_layout.addWidget(self.theta_slider)
-        theta_layout.addWidget(self.theta_value_label)
-        self.controls_layout.addLayout(theta_layout)
-
-        # Lambda (Wavelength) slider
-        lambda_layout = QHBoxLayout()
-        lambda_label = QLabel("Lambda:")
-        self.lambda_slider = QSlider(Qt.Horizontal)
-        self.lambda_slider.setRange(5, 20)
-        self.lambda_slider.setValue(self.lambd)
-        self.lambda_slider.setTickInterval(5)
-        self.lambda_slider.setTickPosition(QSlider.TicksBelow)
-        self.lambda_slider.valueChanged.connect(self.update_lambda)
-        self.lambda_value_label = QLabel(str(self.lambd))
-
-        lambda_layout.addWidget(lambda_label)
-        lambda_layout.addWidget(self.lambda_slider)
-        lambda_layout.addWidget(self.lambda_value_label)
-        self.controls_layout.addLayout(lambda_layout)
-
-        # Sigma slider
-        sigma_layout = QHBoxLayout()
-        sigma_label = QLabel("Sigma:")
-        self.sigma_slider = QSlider(Qt.Horizontal)
-        self.sigma_slider.setRange(1, 10)
-        self.sigma_slider.setValue(self.sigma)
-        self.sigma_slider.setTickInterval(1)
-        self.sigma_slider.setTickPosition(QSlider.TicksBelow)
-        self.sigma_slider.valueChanged.connect(self.update_sigma)
-        self.sigma_value_label = QLabel(str(self.sigma))
-
-        sigma_layout.addWidget(sigma_label)
-        sigma_layout.addWidget(self.sigma_slider)
-        sigma_layout.addWidget(self.sigma_value_label)
-        self.controls_layout.addLayout(sigma_layout)
-
-        # Gamma slider
-        gamma_layout = QHBoxLayout()
-        gamma_label = QLabel("Gamma:")
-        self.gamma_slider = QSlider(Qt.Horizontal)
-        self.gamma_slider.setRange(1, 10)  # Representing 0.1 to 1.0
-        self.gamma_slider.setValue(int(self.gamma * 10))
-        self.gamma_slider.setTickInterval(1)
-        self.gamma_slider.setTickPosition(QSlider.TicksBelow)
-        self.gamma_slider.valueChanged.connect(self.update_gamma)
-        self.gamma_value_label = QLabel(f"{self.gamma:.1f}")
-
-        gamma_layout.addWidget(gamma_label)
-        gamma_layout.addWidget(self.gamma_slider)
-        gamma_layout.addWidget(self.gamma_value_label)
-        self.controls_layout.addLayout(gamma_layout)
-
-    def update_theta(self, value):
-        self.theta = value
-        self.theta_value_label.setText(str(value))
-        self.apply_filter()
-
-    def update_lambda(self, value):
-        self.lambd = value
-        self.lambda_value_label.setText(str(value))
-        self.apply_filter()
-
-    def update_sigma(self, value):
-        self.sigma = value
-        self.sigma_value_label.setText(str(value))
-        self.apply_filter()
-
-    def update_gamma(self, value):
-        self.gamma = value / 10.0
-        self.gamma_value_label.setText(f"{self.gamma:.1f}")
-        self.apply_filter()
-
-    def apply_filter(self, image=None):
-        if self.input_image is None:
-            return
-
-        # Use the blurred image if Gaussian filter is applied
-        if self.gaussian_checkbox.isChecked():
-            sigma_gaussian = self.gaussian_sigma.value() / 10.0
-            blurred_image = cv2.GaussianBlur(self.input_image, (3, 3), sigma_gaussian)
-        else:
-            blurred_image = self.input_image.copy()
-
-        # Convert degrees to radians for theta
-        theta_rad = np.deg2rad(self.theta)
-
-        # Create Gabor kernel
-        kernel_size = 21  # Fixed size for simplicity
-        kernel = cv2.getGaborKernel((kernel_size, kernel_size), self.sigma, theta_rad, self.lambd, self.gamma, 0,
-                                    ktype=cv2.CV_32F)
-
-        # Apply Gabor filter
-        gabor = cv2.filter2D(blurred_image, cv2.CV_8UC3, kernel)
-
-        # Normalize to range 0-255
-        gabor = cv2.normalize(gabor, None, 0, 255, cv2.NORM_MINMAX)
-
-        # Apply skeletonization if enabled
-        if self.skeletonize_checkbox.isChecked():
-            gabor = self.apply_skeletonization(gabor)
-
-        self.filtered_image = gabor
-        self.show_filtered_image()
-
 
 class CannyFilterTab(FilterTab):
     def __init__(self, parent=None):
@@ -2239,7 +2112,6 @@ class MyWindow(QMainWindow):
         self.add_filter_tab("Shearlet", ShearletFilterTab)
         self.add_filter_tab("Laplacian", LaplacianFilterTab)
         self.add_filter_tab("Roberts", RobertsFilterTab)
-        self.add_filter_tab("Gabor Filter", GaborFilterTab)
 
         # Add "+" tab for creating new tabs
         self.tab_widget.addTab(QWidget(), "+")
@@ -2292,7 +2164,6 @@ class MyWindow(QMainWindow):
                 "Shearlet",
                 "Laplacian",
                 "Roberts",
-                "Gabor Filter",
                 "HED"  # Add HED to the list
             ]
             filter_name, ok = QInputDialog.getItem(self, "Select Filter", "Choose a filter:", filters, 0, False)
@@ -2303,7 +2174,6 @@ class MyWindow(QMainWindow):
                     "Shearlet": ShearletFilterTab,
                     "Laplacian": LaplacianFilterTab,
                     "Roberts": RobertsFilterTab,
-                    "Gabor Filter": GaborFilterTab,
                     "HED": HEDFilterTab  # Map "HED" to HEDFilterTab
                 }
                 filter_class = filter_classes.get(filter_name)
