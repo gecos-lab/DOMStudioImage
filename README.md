@@ -1,4 +1,3 @@
-```markdown
 # DOMStudioImage: Comprehensive Lineament Detection Tool for Geological Images
 
 DOMStudioImage is a robust and user-friendly application designed for the detection and analysis of lineaments in geological images. Leveraging advanced edge detection algorithms and providing extensive customization options, DOMStudioImage serves as an indispensable tool for geologists, researchers, and image processing enthusiasts.
