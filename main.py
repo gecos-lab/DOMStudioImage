@@ -56,7 +56,7 @@ import torch
  # Define a NodeItem representing control points
 # Define a NodeItem representing control points
 class NodeItem(QGraphicsEllipseItem):
-    def __init__(self, x, y, radius=3, parent=None):
+    def __init__(self, x, y, radius=1, parent=None):
         super().__init__(-radius, -radius, 2*radius, 2*radius, parent)
         self.setPos(x, y)
         self.setBrush(QColor('blue'))
@@ -622,7 +622,7 @@ class ManualInterpretationWindow(QDialog):
         self.lines.clear()
 
         # Use the Edgelink class for edge linking
-        minlength = 6
+        minlength = 3
         edge_linker = edgelink(self.filtered_image, minlength)
         edge_linker.get_edgelist()
         edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
@@ -652,7 +652,7 @@ class ManualInterpretationWindow(QDialog):
         self.lines.append(line)
 
         for x, y in points:
-            node = NodeItem(x, y, radius=5)  # Increased radius for better visibility
+            node = NodeItem(x, y, radius=2)  # Increased radius for better visibility
             node.setZValue(2)  # Ensure nodes are above lines
             self.scene.addItem(node)
             line.add_node(node)
@@ -754,7 +754,7 @@ class ManualInterpretationWindow(QDialog):
 
         # Use the Edgelink class for edge linking
         if self.use_edgelink:
-            minlength=6
+            minlength=3
             edge_linker = edgelink(self.filtered_image, minlength)
             edge_linker.get_edgelist()
             edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
@@ -1303,10 +1303,6 @@ class HEDFilterTab(FilterTab):
         edge_binary = np.squeeze(edge_binary)
         # print(f"edge_binary.shape after squeeze: {edge_binary.shape}")
 
-        # Apply skeletonization if enabled
-        if self.skeletonize_checkbox.isChecked():
-            edge_binary = self.apply_skeletonization(edge_binary)
-
         # Resize back to original image size
         # print(f"Resizing edge map to width: {width}, height: {height}")
         edge_map_resized = cv2.resize(
@@ -1426,26 +1422,43 @@ class CannyFilterTab(FilterTab):
         self.setup_controls()
 
     def setup_controls(self):
-        # Threshold sliders
+        # Threshold sliders with adjusted ranges for stronger edges
         self.threshold1 = QSlider(Qt.Horizontal)
-        self.threshold1.setRange(0, 255)
-        self.threshold1.setValue(50)
+        self.threshold1.setRange(100, 200)  # Higher range for stronger edges
+        self.threshold1.setValue(120)  # Higher default for noise reduction
         self.threshold1.valueChanged.connect(self.update_filter)
 
         self.threshold2 = QSlider(Qt.Horizontal)
-        self.threshold2.setRange(0, 255)
-        self.threshold2.setValue(150)
+        self.threshold2.setRange(150, 255)  # Much higher min range
+        self.threshold2.setValue(180)  # Higher default for major edges
         self.threshold2.valueChanged.connect(self.update_filter)
 
-        self.controls_layout.addWidget(QLabel("Threshold 1"))
-        self.controls_layout.addWidget(self.threshold1)
-        self.controls_layout.addWidget(QLabel("Threshold 2"))
-        self.controls_layout.addWidget(self.threshold2)
+        # Add threshold labels and controls
+        threshold1_layout = QHBoxLayout()
+        threshold1_layout.addWidget(QLabel("Threshold 1:"))
+        threshold1_layout.addWidget(self.threshold1)
+        self.threshold1_value = QLabel(str(self.threshold1.value()))
+        threshold1_layout.addWidget(self.threshold1_value)
+        self.controls_layout.addLayout(threshold1_layout)
 
-        # Manual #
+        threshold2_layout = QHBoxLayout()
+        threshold2_layout.addWidget(QLabel("Threshold 2:"))
+        threshold2_layout.addWidget(self.threshold2)
+        self.threshold2_value = QLabel(str(self.threshold2.value()))
+        threshold2_layout.addWidget(self.threshold2_value)
+        self.controls_layout.addLayout(threshold2_layout)
 
     def apply_filter(self, image):
-        self.filtered_image = cv2.Canny(image, self.threshold1.value(), self.threshold2.value())
+        self.filtered_image = cv2.Canny(
+            image, 
+            self.threshold1.value(), 
+            self.threshold2.value(),
+            apertureSize=3,  # Increased aperture for more stable edges
+            L2gradient=True  # Enable L2gradient for better edge magnitude
+        )
+        
+        self.threshold1_value.setText(str(self.threshold1.value()))
+        self.threshold2_value.setText(str(self.threshold2.value()))
 
     def open_manual_interpretation(self):
         pass
@@ -1472,10 +1485,22 @@ class SobelFilterTab(FilterTab):
         ksize = self.ksize.value()
         if ksize % 2 == 0:
             ksize += 1
+            
+        # Calculate Sobel gradients
         grad_x = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=ksize)
         grad_y = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=ksize)
-        self.filtered_image = cv2.addWeighted(cv2.convertScaleAbs(grad_x), 0.5,
-                                              cv2.convertScaleAbs(grad_y), 0.5, 0)
+        
+        # Calculate gradient magnitude
+        magnitude = np.sqrt(grad_x**2 + grad_y**2)
+        
+        # Normalize to 0-255 range
+        magnitude = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        
+        # Apply threshold to get binary image
+        _, binary = cv2.threshold(magnitude, 50, 255, cv2.THRESH_BINARY)
+        
+        self.filtered_image = binary
+
 
     def open_manual_interpretation(self):
         pass
@@ -2112,6 +2137,7 @@ class MyWindow(QMainWindow):
         self.add_filter_tab("Shearlet", ShearletFilterTab)
         self.add_filter_tab("Laplacian", LaplacianFilterTab)
         self.add_filter_tab("Roberts", RobertsFilterTab)
+        self.add_filter_tab("HED", HEDFilterTab)  # Add HED tab
 
         # Add "+" tab for creating new tabs
         self.tab_widget.addTab(QWidget(), "+")
@@ -2222,7 +2248,7 @@ class MyWindow(QMainWindow):
             contours, _ = cv2.findContours(binary_image, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
             # Filter out short edges
-            min_length = 10  # You can adjust this value
+            min_length = 2  # You can adjust this value
             long_contours = [cnt for cnt in contours if cv2.arcLength(cnt, False) > min_length]
 
             # Create a blank image and draw the long contours
