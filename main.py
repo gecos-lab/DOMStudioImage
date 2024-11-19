@@ -54,6 +54,7 @@ from PyQt5.QtGui import QTransform
 from collections import deque
 import torch
 from PyQt5.QtCore import (Qt, pyqtSignal)
+from PyQt5.QtWidgets import QSpinBox
  # Define a NodeItem representing control points
 # Define a NodeItem representing control points
 class NodeItem(QGraphicsEllipseItem):
@@ -2163,11 +2164,28 @@ class MyWindow(QMainWindow):
         self.load_button.clicked.connect(self.load_image)
         main_layout.addWidget(self.load_button)
 
+        # Create a horizontal layout for the "Clean Short Edges" controls
+        clean_edges_layout = QHBoxLayout()
+
         # Clean Short Edges button
         self.clean_edges_button = QPushButton("Clean Short Edges")
         self.clean_edges_button.clicked.connect(self.clean_short_edges)
         self.clean_edges_button.setEnabled(False)  # Initially disabled
-        main_layout.addWidget(self.clean_edges_button)
+        clean_edges_layout.addWidget(self.clean_edges_button)
+        # Min Size label
+        self.min_size_label = QLabel("Min Size:")
+        clean_edges_layout.addWidget(self.min_size_label)
+
+        # Min Size spin box
+        self.min_size_spinbox = QSpinBox()
+        self.min_size_spinbox.setMinimum(1)
+        self.min_size_spinbox.setMaximum(1000)  # Adjust as needed
+        self.min_size_spinbox.setValue(10)      # Default value
+        self.min_size_spinbox.setSuffix(" px")
+        clean_edges_layout.addWidget(self.min_size_spinbox)
+
+         # Add the clean edges layout to the main layout
+        main_layout.addLayout(clean_edges_layout)
 
         # Manual Interpretation button
         self.manual_interpretation_button = QPushButton("Manual Interpretation")
@@ -2258,6 +2276,9 @@ class MyWindow(QMainWindow):
             # Get the filtered image
             image = current_tab.filtered_image.copy()
             
+            # Get 'min_size' from the spin box
+            min_size = self.min_size_spinbox.value()
+            
             # Apply skeletonization first if not already done
             if not current_tab.skeletonize_checkbox.isChecked():
                 image = skeletonize(image > 0).astype(np.uint8) * 255
@@ -2265,21 +2286,25 @@ class MyWindow(QMainWindow):
             # Label connected components
             labeled, num_features = measure.label(image > 0, return_num=True, connectivity=2)
             
-            # Filter components based on size and intensity
-            min_size = 10  # Minimum number of pixels for a valid edge
+            # Filter components based on size
             cleaned_image = np.zeros_like(image)
 
             for label_id in range(1, num_features + 1):
                 component = labeled == label_id
                 size = np.sum(component)
-                mean_intensity = np.mean(image[component])
                 
-                if size >= min_size and mean_intensity > 50:
+                if size >= min_size:
                     cleaned_image[component] = 255
 
             # Update the filtered image
             current_tab.filtered_image = cleaned_image
             current_tab.show_filtered_image()
+        else:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                "Please load an image and apply a filter first before cleaning short edges."
+            )
 
     def open_manual_interpretation(self):
         current_tab = self.tab_widget.currentWidget()
