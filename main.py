@@ -53,6 +53,7 @@ from PyQt5.QtCore import Qt, QPointF, QRectF
 from PyQt5.QtGui import QTransform
 from collections import deque
 import torch
+from PyQt5.QtCore import (Qt, pyqtSignal)
  # Define a NodeItem representing control points
 # Define a NodeItem representing control points
 class NodeItem(QGraphicsEllipseItem):
@@ -89,7 +90,7 @@ class NodeItem(QGraphicsEllipseItem):
 # Define a LineItem representing lines composed of nodes
 class LineItem(QGraphicsPathItem):
     def __init__(self, nodes=None, parent=None):
-        super().__init__(parent)
+        super().__init__()
         self.nodes = nodes if nodes else []
         pen = QPen(QColor('green'))  # Changed color to green for better contrast
         pen.setWidth(1)  # Increased width for better visibility
@@ -101,6 +102,7 @@ class LineItem(QGraphicsPathItem):
         )
         self.setZValue(1)  # Ensure lines are above the background
         self.update_path()
+        self.parent = parent
 
     def update_path(self):
         path = QPainterPath()
@@ -122,16 +124,17 @@ class LineItem(QGraphicsPathItem):
             self.update_path()
 
     def contextMenuEvent(self, event):
-        # Access the parent ManualInterpretationWindow
-        parent_window = self.scene().parent()
-        if not isinstance(parent_window, ManualInterpretationWindow):
-            return
-
         menu = QMenu()
-        delete_action = QAction('Delete Line', self)
-        delete_action.triggered.connect(lambda: parent_window.delete_line(self))
-        menu.addAction(delete_action)
-        menu.exec_(event.screenPos())
+        delete_action = menu.addAction("Delete Line")
+        action = menu.exec_(event.screenPos())
+        if action == delete_action:
+            # Remove the line and its nodes
+            for node in self.nodes:
+                self.scene().removeItem(node)
+            self.scene().removeItem(self)
+            # Remove from the parent's lines list
+            if self in self.parent.lines:
+                self.parent.lines.remove(self)
 
 
 class Network(torch.nn.Module): # Neural Network for Hessian Edge Detection
@@ -383,6 +386,7 @@ class FilterTab(QWidget):
         self.input_image = None
         self.filtered_image = None
         self.edge_linked_image = None
+        self.edge_link_window = None  # Add this line
         self.initUI()
 
     def initUI(self):
@@ -438,7 +442,23 @@ class FilterTab(QWidget):
 
         # Call the method to create filter-specific controls
         self.create_filter_controls()
+    def open_edge_link_window(self):
+        if self.filtered_image is None:
+            QMessageBox.warning(self, "Error", "Apply a filter first")
+            return
+            
+        # Create new window or show existing
+        if not self.edge_link_window:
+            self.edge_link_window = EdgeLinkWindow(self.filtered_image, self)
+            # Connect signal to update filtered image
+            self.edge_link_window.edge_link_updated.connect(self.update_from_edge_link)
+        
+        self.edge_link_window.show()
 
+    def update_from_edge_link(self, new_image):
+        """Update the filtered image from edge link results"""
+        self.filtered_image = new_image
+        self.show_filtered_image()
     def create_filter_controls(self):
         """
         Method to be overridden by subclasses to add their specific controls.
@@ -488,9 +508,16 @@ class FilterTab(QWidget):
 
     def open_edge_link_window(self):
         if self.filtered_image is None:
+            QMessageBox.warning(self, "Error", "Apply a filter first")
             return
-        self.edge_link_window = EdgeLinkWindow(self.filtered_image, self.parent())
+        
+        # Create new window if not exists or show existing
+        if self.edge_link_window is None:
+            self.edge_link_window = EdgeLinkWindow(self.filtered_image, self)
+            self.edge_link_window.edge_link_updated.connect(self.update_from_edge_link)
+        
         self.edge_link_window.show()
+        self.edge_link_window.process_and_display()  # Force initial update
 
     def apply_filter(self, image):
         # To be implemented in subclasses
@@ -636,7 +663,7 @@ class ManualInterpretationWindow(QDialog):
         for edge in processed_edge_lists:
             if len(edge) >= 2:
                 # Simplify the edge if necessary
-                epsilon = 0.01 * cv2.arcLength(edge, True)
+                epsilon = 0.05 * cv2.arcLength(edge, True)
                 approx = cv2.approxPolyDP(edge, epsilon, True)
                 points = [(point[0][1], point[0][0]) for point in approx]
 
@@ -646,10 +673,12 @@ class ManualInterpretationWindow(QDialog):
                     self.add_line(sampled_points)
 
     def add_line(self, points):
-        line = LineItem()
-        line.setZValue(1)  # Ensure lines are above the background
+        line = LineItem(parent=self)
+        line.setZValue(1)
+        line.setFlags(QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemIsMovable)
         self.scene.addItem(line)
         self.lines.append(line)
+
 
         for x, y in points:
             node = NodeItem(x, y, radius=2)  # Increased radius for better visibility
@@ -736,7 +765,7 @@ class ManualInterpretationWindow(QDialog):
         lines = []
         for contour in contours:
             # Approximate the contour to reduce the number of points
-            epsilon = 0.01 * cv2.arcLength(contour, True)
+            epsilon = 0.05 * cv2.arcLength(contour, True)
             approx = cv2.approxPolyDP(contour, epsilon, True)
 
             # Convert contour to list of (x, y) points
@@ -771,7 +800,7 @@ class ManualInterpretationWindow(QDialog):
         for edge in processed_edge_lists:
             if len(edge) >= 2:
                 # Simplify the edge if necessary
-                epsilon = 0.01 * cv2.arcLength(edge, True)
+                epsilon = 0.05 * cv2.arcLength(edge, True)
                 approx = cv2.approxPolyDP(edge, epsilon, True)
                 points = [(point[0][1], point[0][0]) for point in approx]
 
@@ -1368,13 +1397,17 @@ class LaplacianFilterTab(FilterTab):
         laplacian = cv2.Laplacian(blurred_image, cv2.CV_64F, ksize=self.laplacian_kernel_size)
         laplacian = cv2.convertScaleAbs(laplacian)
 
+        # Convert to binary image before skeletonization
+        _, binary_image = cv2.threshold(laplacian, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
         # Apply skeletonization if enabled
         if self.skeletonize_checkbox.isChecked():
-            laplacian = self.apply_skeletonization(laplacian)
+            binary_image = self.apply_skeletonization(binary_image)
+            self.filtered_image = binary_image
+        else:
+            self.filtered_image = laplacian
 
-        self.filtered_image = laplacian
         self.show_filtered_image()
-
 
 class RobertsFilterTab(FilterTab):
     def __init__(self, parent=None):
@@ -1399,21 +1432,25 @@ class RobertsFilterTab(FilterTab):
 
         # Apply Roberts filter
         kernel_roberts_x = np.array([[1, 0],
-                                     [0, -1]], dtype=np.float32)
+                                    [0, -1]], dtype=np.float32)
         kernel_roberts_y = np.array([[0, 1],
-                                     [-1, 0]], dtype=np.float32)
+                                    [-1, 0]], dtype=np.float32)
         roberts_x = cv2.filter2D(blurred_image, cv2.CV_64F, kernel_roberts_x)
         roberts_y = cv2.filter2D(blurred_image, cv2.CV_64F, kernel_roberts_y)
         roberts = np.sqrt(roberts_x**2 + roberts_y**2)
         roberts = cv2.convertScaleAbs(roberts)
 
+        # Convert to binary image before skeletonization
+        _, binary_image = cv2.threshold(roberts, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
         # Apply skeletonization if enabled
         if self.skeletonize_checkbox.isChecked():
-            roberts = self.apply_skeletonization(roberts)
+            binary_image = self.apply_skeletonization(binary_image)
+            self.filtered_image = binary_image
+        else:
+            self.filtered_image = roberts
 
-        self.filtered_image = roberts
         self.show_filtered_image()
-
 
 
 class CannyFilterTab(FilterTab):
@@ -1539,10 +1576,13 @@ class ShearletFilterTab(FilterTab):
 
 
 class EdgeLinkWindow(QDialog):
+    edge_link_updated = pyqtSignal(np.ndarray)
+    
     def __init__(self, image, parent=None):
         super().__init__(parent)
         self.image = image
         self.edge_linked_image = None
+        self.parent = parent
         self.initUI()
 
     def initUI(self):
@@ -1551,127 +1591,91 @@ class EdgeLinkWindow(QDialog):
 
         layout = QVBoxLayout()
 
+        # Create matplotlib figure
         self.figure = Figure(figsize=(8, 6))
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas)
 
-        # Add sliders for edgelink parameters
+        # Create sliders
         self.min_length_slider = self.create_slider("Minimum Edge Length", 1, 50, 10)
-        layout.addWidget(self.min_length_slider)
-
         self.max_gap_slider = self.create_slider("Maximum Gap", 1, 20, 2)
-        layout.addWidget(self.max_gap_slider)
-
         self.min_angle_slider = self.create_slider("Minimum Angle", 0, 90, 20)
+
+        layout.addWidget(self.min_length_slider)
+        layout.addWidget(self.max_gap_slider)
         layout.addWidget(self.min_angle_slider)
 
-        # Add Apply button
-        self.apply_button = QPushButton("Apply Edge Link")
-        self.apply_button.clicked.connect(self.apply_edge_link)
+        # Add apply button
+        self.apply_button = QPushButton("Apply to Main Window")
+        self.apply_button.clicked.connect(self.apply_to_main)
         layout.addWidget(self.apply_button)
 
         self.setLayout(layout)
+        
+        # Initial processing
+        self.process_and_display()
 
     def create_slider(self, name, min_val, max_val, default_val):
-        slider_layout = QHBoxLayout()
-        slider_layout.addWidget(QLabel(name))
+        container = QWidget()
+        layout = QHBoxLayout()
+        
+        label = QLabel(name)
+        layout.addWidget(label)
+        
         slider = QSlider(Qt.Horizontal)
-        slider.setRange(min_val, max_val)
+        slider.setRange(min_val, max_val)  
         slider.setValue(default_val)
         slider.setTickPosition(QSlider.TicksBelow)
-        slider.setTickInterval((max_val - min_val) // 10)
-        slider_layout.addWidget(slider)
+        # Direct connection to process_and_display
+        slider.valueChanged.connect(lambda: self.process_and_display())
+        
         value_label = QLabel(str(default_val))
-        slider_layout.addWidget(value_label)
         slider.valueChanged.connect(lambda v: value_label.setText(str(v)))
+        
+        layout.addWidget(slider)
+        layout.addWidget(value_label)
+        
+        container.setLayout(layout)
+        return container
 
-        widget = QWidget()
-        widget.setLayout(slider_layout)
-        return widget
+    def process_and_display(self):
+        if self.image is None:
+            return
 
-    def apply_edge_link(self):
-        minilength = self.min_length_slider.findChild(QSlider).value()
+        # Get current values
+        min_length = self.min_length_slider.findChild(QSlider).value()
         max_gap = self.max_gap_slider.findChild(QSlider).value()
         min_angle = self.min_angle_slider.findChild(QSlider).value()
 
-        edge_linker = edgelink(self.image, minilength)
+        # Process edges
+        edge_linker = edgelink(self.image, min_length)
         edge_linker.get_edgelist()
         edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
+        processed_edges = self.post_process_edges(edge_lists, max_gap, min_angle)
 
-        # Post-process edge lists based on max_gap and min_angle
-        processed_edge_lists = self.post_process_edges(edge_lists, max_gap, min_angle)
+        # Create and store output image
+        self.edge_linked_image = self.create_edge_image(processed_edges)
+        
+        # Update visualization
+        self.visualize_edge_lists(processed_edges)
+        
+        # Emit signal with result immediately
+        self.edge_link_updated.emit(self.edge_linked_image)
 
-        self.visualize_edge_lists(processed_edge_lists)
 
-
-    def visualize_edge_lists(self, edge_lists):
-        self.edge_linked_image = np.zeros(self.image.shape, dtype=np.uint8)
+    def create_edge_image(self, edge_lists):
+        edge_image = np.zeros(self.image.shape, dtype=np.uint8)
         for edge in edge_lists:
             for point in edge:
-                if 0 <= point[0] < self.edge_linked_image.shape[0] and 0 <= point[1] < self.edge_linked_image.shape[1]:
-                    self.edge_linked_image[int(point[0]), int(point[1])] = 255
+                if 0 <= point[0] < edge_image.shape[0] and 0 <= point[1] < edge_image.shape[1]:
+                    edge_image[int(point[0]), int(point[1])] = 255
+        return edge_image
 
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        ax.imshow(self.edge_linked_image, cmap='gray')
-        ax.axis('off')
-        self.canvas.draw()
-
-    def clean_short_edges(self):
-        if self.edge_lists is None:
-            QMessageBox.warning(self, "Error", "Please apply edge link first.")
-            return
-
-        min_length = self.clean_edge_length_slider.findChild(QSlider).value()
-
-        # Convert edge lists to the format expected by cleanedgelist
-        converted_edge_lists = []
-        for edge in self.edge_lists:
-            converted_edge = np.array(edge)
-            if converted_edge.shape[0] > 0:
-                converted_edge_lists.append(converted_edge)
-
-        try:
-            cleaned_edge_lists = cleanedgelist(converted_edge_lists, min_length)
-
-            # Convert cleaned edge lists back to our format
-            final_edge_lists = [edge.tolist() for edge in cleaned_edge_lists if edge.shape[0] > 0]
-
-            self.visualize_edge_lists(final_edge_lists)
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"An error occurred while cleaning edges: {str(e)}")
-            print(f"Error details: {traceback.format_exc()}")
-    def reset_view(self):
-        # Reset the view to show original edges when sliders change
-        self.edge_linked_image = self.original_edges.copy()
-        self.update_view()
-
-    def point_distance(self, p1, p2):
-        return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
-
-    def angle_between_points(self, p1, p2, p3):
-        v1 = np.array([p1[0] - p2[0], p1[1] - p2[1]])
-        v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
-        angle = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
-        return np.degrees(angle)
     def visualize_edge_lists(self, edge_lists):
-        self.edge_linked_image = np.zeros(self.image.shape, dtype=np.uint8)
-        for edge in edge_lists:
-            for point in edge:
-                if 0 <= point[0] < self.edge_linked_image.shape[0] and 0 <= point[1] < self.edge_linked_image.shape[1]:
-                    self.edge_linked_image[int(point[0]), int(point[1])] = 255
-
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        ax.imshow(self.edge_linked_image, cmap='gray')
-        ax.axis('off')
-        self.canvas.draw()
-    def update_view(self):
-        if self.edge_linked_image is None:
-            return
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        ax.imshow(self.edge_linked_image, cmap='gray')
+        edge_image = self.create_edge_image(edge_lists)
+        ax.imshow(edge_image, cmap='gray')
         ax.axis('off')
         self.canvas.draw()
 
@@ -1683,17 +1687,28 @@ class EdgeLinkWindow(QDialog):
                 if self.point_distance(new_edge[-1], edge[i]) <= max_gap:
                     if len(new_edge) < 2 or self.angle_between_points(new_edge[-2], new_edge[-1], edge[i]) >= min_angle:
                         new_edge.append(edge[i])
-                    else:
-                        if len(new_edge) > 1:
-                            processed_edges.append(np.array(new_edge))
-                        new_edge = [edge[i]]
-                else:
-                    if len(new_edge) > 1:
-                        processed_edges.append(np.array(new_edge))
-                    new_edge = [edge[i]]
             if len(new_edge) > 1:
                 processed_edges.append(np.array(new_edge))
         return processed_edges
+
+    def point_distance(self, p1, p2):
+        return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+
+    def angle_between_points(self, p1, p2, p3):
+        v1 = np.array([p1[0] - p2[0], p1[1] - p2[1]])
+        v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
+        
+        if np.all(v1 == 0) or np.all(v2 == 0):
+            return 0
+            
+        cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+        cos_angle = np.clip(cos_angle, -1.0, 1.0)
+        return np.degrees(np.arccos(cos_angle))
+
+    def apply_to_main(self):
+        if self.edge_linked_image is not None:
+            self.edge_link_updated.emit(self.edge_linked_image)
+            self.accept()
 
 class PrecisionRecallDialog(QDialog):
     def __init__(self, parent=None, **filter_data):
@@ -2165,7 +2180,6 @@ class MyWindow(QMainWindow):
     def add_filter_tab(self, filter_name, filter_class):
         tab = filter_class(self)
         self.tab_widget.insertTab(self.tab_widget.count() - 1, tab, filter_name)
-
     def open_manual_interpretation(self):
         current_tab = self.tab_widget.currentWidget()
         if isinstance(current_tab, FilterTab) and current_tab.filtered_image is not None:
@@ -2241,21 +2255,29 @@ class MyWindow(QMainWindow):
     def clean_short_edges(self):
         current_tab = self.tab_widget.currentWidget()
         if isinstance(current_tab, FilterTab) and current_tab.filtered_image is not None:
-            # Convert the filtered image to a binary image
-            _, binary_image = cv2.threshold(current_tab.filtered_image, 127, 255, cv2.THRESH_BINARY)
+            # Get the filtered image
+            image = current_tab.filtered_image.copy()
+            
+            # Apply skeletonization first if not already done
+            if not current_tab.skeletonize_checkbox.isChecked():
+                image = skeletonize(image > 0).astype(np.uint8) * 255
 
-            # Find contours
-            contours, _ = cv2.findContours(binary_image, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            # Label connected components
+            labeled, num_features = measure.label(image > 0, return_num=True, connectivity=2)
+            
+            # Filter components based on size and intensity
+            min_size = 10  # Minimum number of pixels for a valid edge
+            cleaned_image = np.zeros_like(image)
 
-            # Filter out short edges
-            min_length = 2  # You can adjust this value
-            long_contours = [cnt for cnt in contours if cv2.arcLength(cnt, False) > min_length]
+            for label_id in range(1, num_features + 1):
+                component = labeled == label_id
+                size = np.sum(component)
+                mean_intensity = np.mean(image[component])
+                
+                if size >= min_size and mean_intensity > 50:
+                    cleaned_image[component] = 255
 
-            # Create a blank image and draw the long contours
-            cleaned_image = np.zeros_like(current_tab.filtered_image)
-            cv2.drawContours(cleaned_image, long_contours, -1, (255, 255, 255), 1)
-
-            # Update the filtered image in the tab
+            # Update the filtered image
             current_tab.filtered_image = cleaned_image
             current_tab.show_filtered_image()
 
@@ -2311,9 +2333,7 @@ class MyWindow(QMainWindow):
 
         toolsMenu = menubar.addMenu('Tools')
         imagePropertiesMenu = toolsMenu.addMenu('Image Properties')
-        edgeLinkAction = QAction('Edge Link', self)
-        # edgeLinkAction.triggered.connect(self.open_edge_link_window)  # Implement as needed
-        toolsMenu.addAction(edgeLinkAction)
+
 
         calculateStatsMenu = toolsMenu.addMenu('Calculate Statistics')
         calculateStatsAction = QAction('Precision and Recall', self)
@@ -2919,26 +2939,7 @@ class MyWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, "Error", "Failed to load image.")
 
-    def clean_short_edges(self):
-        current_tab = self.tab_widget.currentWidget()
-        if isinstance(current_tab, FilterTab) and current_tab.filtered_image is not None:
-            # Convert the filtered image to a binary image
-            _, binary_image = cv2.threshold(current_tab.filtered_image, 127, 255, cv2.THRESH_BINARY)
 
-            # Find contours
-            contours, _ = cv2.findContours(binary_image, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-
-            # Filter out short edges
-            min_length = 10  # You can adjust this value
-            long_contours = [cnt for cnt in contours if cv2.arcLength(cnt, False) > min_length]
-
-            # Create a blank image and draw the long contours
-            cleaned_image = np.zeros_like(current_tab.filtered_image)
-            cv2.drawContours(cleaned_image, long_contours, -1, (255, 255, 255), 1)
-
-            # Update the filtered image in the tab
-            current_tab.filtered_image = cleaned_image
-            current_tab.show_filtered_image()
 
     def save_mask(self):
         if self.img is None:
