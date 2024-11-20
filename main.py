@@ -57,12 +57,14 @@ from PyQt5.QtCore import (Qt, pyqtSignal)
 from PyQt5.QtWidgets import QSpinBox
  # Define a NodeItem representing control pointsA
 # Define a NodeItem representing control points
-
+from skimage import exposure
+from skimage.util import img_as_float, img_as_ubyte
 
 class PreprocessingWindow(QDialog):
     def __init__(self, image, parent=None):
         super().__init__(parent)
-        self.original_image = image
+        self.original_image = image.copy()  # Keep original
+        self.current_image = image.copy()   # Working copy
         self.mask = np.ones(image.shape[:2], dtype=np.uint8) * 255
         self.drawing = False
         self.points = []
@@ -87,13 +89,19 @@ class PreprocessingWindow(QDialog):
         layout.addWidget(self.view)
 
         # Display the original image
-        height, width = self.original_image.shape[:2]
-        image = QImage(self.original_image.data, width, height, width, QImage.Format_Grayscale8)
-        pixmap = QPixmap.fromImage(image)
-        self.image_item = self.scene.addPixmap(pixmap)
+        self.update_display()
         
         # Set scene rect to image size
+        height, width = self.current_image.shape[:2]
         self.scene.setSceneRect(0, 0, width, height)
+
+        # Add enhancement controls
+        enhance_layout = QHBoxLayout()
+        self.ahe_button = QPushButton("Apply AHE")
+        self.ahe_button.setCheckable(True)
+        self.ahe_button.clicked.connect(self.toggle_ahe)
+        enhance_layout.addWidget(self.ahe_button)
+        layout.addLayout(enhance_layout)
 
         # Add zoom controls
         zoom_layout = QHBoxLayout()
@@ -136,7 +144,30 @@ class PreprocessingWindow(QDialog):
 
         # Fit the view to the scene contents
         self.fit_to_view()
-
+    def update_display(self):
+        height, width = self.current_image.shape[:2]
+        image = QImage(self.current_image.data, width, height, width, QImage.Format_Grayscale8)
+        pixmap = QPixmap.fromImage(image)
+        if hasattr(self, 'image_item'):
+            self.image_item.setPixmap(pixmap)
+        else:
+            self.image_item = self.scene.addPixmap(pixmap)
+    def toggle_ahe(self, checked):
+        try:
+            if checked:
+                # Convert to float and apply AHE
+                img_float = img_as_float(self.original_image)
+                img_eq = exposure.equalize_adapthist(img_float)
+                self.current_image = img_as_ubyte(img_eq)
+                self.ahe_button.setText("Remove AHE")
+            else:
+                self.current_image = self.original_image.copy()
+                self.ahe_button.setText("Apply AHE")
+            
+            self.update_display()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to apply AHE: {str(e)}")
+            self.ahe_button.setChecked(False)
     def fit_to_view(self):
         self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
         self.view.centerOn(self.scene.sceneRect().center())
@@ -224,7 +255,7 @@ class PreprocessingWindow(QDialog):
             QMessageBox.warning(self, "Warning", "Please draw a mask first.")
 
     def get_masked_image(self):
-        return cv2.bitwise_and(self.original_image, self.original_image, mask=self.mask)
+        return cv2.bitwise_and(self.current_image, self.current_image, mask=self.mask)
 class NodeItem(QGraphicsEllipseItem):
     def __init__(self, x, y, radius=1, parent=None):
         super().__init__(-radius, -radius, 2*radius, 2*radius, parent)
@@ -3095,7 +3126,7 @@ class MyWindow(QMainWindow):
                 if preprocess_dialog.exec_() == QDialog.Accepted:
                     # Get the masked image
                     self.img = preprocess_dialog.get_masked_image()
-                    self.img = cv2.resize(self.img, (512, 512))
+                    self.img = cv2.resize(self.img, (1024, 1024))
                     self.mask = np.zeros(self.img.shape[:2], np.uint8)
                     self.filtered_img = self.img.copy()
                     self.shearlet_system = EdgeSystem(*self.img.shape)
