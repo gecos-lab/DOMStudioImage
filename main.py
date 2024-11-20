@@ -55,8 +55,176 @@ from collections import deque
 import torch
 from PyQt5.QtCore import (Qt, pyqtSignal)
 from PyQt5.QtWidgets import QSpinBox
- # Define a NodeItem representing control points
+ # Define a NodeItem representing control pointsA
 # Define a NodeItem representing control points
+
+
+class PreprocessingWindow(QDialog):
+    def __init__(self, image, parent=None):
+        super().__init__(parent)
+        self.original_image = image
+        self.mask = np.ones(image.shape[:2], dtype=np.uint8) * 255
+        self.drawing = False
+        self.points = []
+        self.initUI()
+
+    def initUI(self):
+        # Set a larger initial window size
+        screen = QApplication.primaryScreen().geometry()
+        self.setGeometry(100, 100, min(screen.width() * 0.8, 1200), 
+                        min(screen.height() * 0.8, 800))
+        self.setWindowTitle('Image Preprocessing - Draw Mask')
+
+        layout = QVBoxLayout()
+
+        # Create the graphics scene and view
+        self.scene = QGraphicsScene()
+        self.view = QGraphicsView(self.scene)
+        self.view.setRenderHint(QPainter.Antialiasing)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.view.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        layout.addWidget(self.view)
+
+        # Display the original image
+        height, width = self.original_image.shape[:2]
+        image = QImage(self.original_image.data, width, height, width, QImage.Format_Grayscale8)
+        pixmap = QPixmap.fromImage(image)
+        self.image_item = self.scene.addPixmap(pixmap)
+        
+        # Set scene rect to image size
+        self.scene.setSceneRect(0, 0, width, height)
+
+        # Add zoom controls
+        zoom_layout = QHBoxLayout()
+        self.zoom_in_btn = QPushButton("Zoom In")
+        self.zoom_out_btn = QPushButton("Zoom Out")
+        self.fit_btn = QPushButton("Fit to View")
+        
+        self.zoom_in_btn.clicked.connect(lambda: self.zoom(1.2))
+        self.zoom_out_btn.clicked.connect(lambda: self.zoom(0.8))
+        self.fit_btn.clicked.connect(self.fit_to_view)
+        
+        zoom_layout.addWidget(self.zoom_in_btn)
+        zoom_layout.addWidget(self.zoom_out_btn)
+        zoom_layout.addWidget(self.fit_btn)
+        layout.addLayout(zoom_layout)
+
+        # Button layout
+        button_layout = QHBoxLayout()
+        self.clear_button = QPushButton('Clear Mask')
+        self.complete_button = QPushButton('Complete Mask')
+        self.apply_button = QPushButton('Apply Mask')
+        
+        self.clear_button.clicked.connect(self.clear_mask)
+        self.complete_button.clicked.connect(self.complete_mask)
+        self.apply_button.clicked.connect(self.apply_mask)
+        
+        button_layout.addWidget(self.clear_button)
+        button_layout.addWidget(self.complete_button)
+        button_layout.addWidget(self.apply_button)
+        layout.addLayout(button_layout)
+
+        self.setLayout(layout)
+
+        # Install event filter for mouse events
+        self.view.viewport().installEventFilter(self)
+
+        # Initialize path for drawing
+        self.current_path = QPainterPath()
+        self.path_item = None
+
+        # Fit the view to the scene contents
+        self.fit_to_view()
+
+    def fit_to_view(self):
+        self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+        self.view.centerOn(self.scene.sceneRect().center())
+
+    def zoom(self, factor):
+        self.view.scale(factor, factor)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit_to_view()
+
+    def eventFilter(self, obj, event):
+        if obj == self.view.viewport():
+            if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
+                self.start_drawing(event)
+            elif event.type() == event.MouseMove and self.drawing:
+                self.continue_drawing(event)
+            elif event.type() == event.MouseButtonRelease and event.button() == Qt.LeftButton:
+                self.end_drawing(event)
+        return super().eventFilter(obj, event)
+
+    def start_drawing(self, event):
+        scene_pos = self.view.mapToScene(event.pos())
+        self.drawing = True
+        self.points = [scene_pos]
+        self.current_path = QPainterPath()
+        self.current_path.moveTo(scene_pos)
+        
+        if self.path_item:
+            self.scene.removeItem(self.path_item)
+        self.path_item = self.scene.addPath(self.current_path, 
+                                          QPen(Qt.red, 2, Qt.SolidLine))
+
+    def continue_drawing(self, event):
+        if self.drawing:
+            scene_pos = self.view.mapToScene(event.pos())
+            self.points.append(scene_pos)
+            self.current_path.lineTo(scene_pos)
+            if self.path_item:
+                self.scene.removeItem(self.path_item)
+            self.path_item = self.scene.addPath(self.current_path, 
+                                              QPen(Qt.red, 2, Qt.SolidLine))
+
+    def end_drawing(self, event):
+        self.drawing = False
+        if len(self.points) > 2:
+            self.current_path.lineTo(self.points[0])
+            if self.path_item:
+                self.scene.removeItem(self.path_item)
+            self.path_item = self.scene.addPath(self.current_path, 
+                                              QPen(Qt.red, 2, Qt.SolidLine))
+
+    def clear_mask(self):
+        if self.path_item:
+            self.scene.removeItem(self.path_item)
+        self.points = []
+        self.current_path = QPainterPath()
+        self.mask = np.ones(self.original_image.shape[:2], dtype=np.uint8) * 255
+
+    def complete_mask(self):
+        if len(self.points) > 2:
+            # Create mask from points
+            points = [(p.x(), p.y()) for p in self.points]
+            points = np.array(points, dtype=np.int32)
+            
+            # Create new mask
+            self.mask = np.zeros(self.original_image.shape[:2], dtype=np.uint8)
+            cv2.fillPoly(self.mask, [points], 255)
+
+            # Show preview of masked image
+            masked_image = cv2.bitwise_and(self.original_image, self.original_image, 
+                                         mask=self.mask)
+            
+            # Update the display
+            height, width = masked_image.shape[:2]
+            image = QImage(masked_image.data, width, height, width, 
+                         QImage.Format_Grayscale8)
+            pixmap = QPixmap.fromImage(image)
+            self.image_item.setPixmap(pixmap)
+
+    def apply_mask(self):
+        if np.any(self.mask):
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Warning", "Please draw a mask first.")
+
+    def get_masked_image(self):
+        return cv2.bitwise_and(self.original_image, self.original_image, mask=self.mask)
 class NodeItem(QGraphicsEllipseItem):
     def __init__(self, x, y, radius=1, parent=None):
         super().__init__(-radius, -radius, 2*radius, 2*radius, parent)
@@ -2243,32 +2411,7 @@ class MyWindow(QMainWindow):
                 else:
                     QMessageBox.warning(self, "Error", f"Unknown filter: {filter_name}")
 
-    def load_image(self):
-        img_path, _ = QFileDialog.getOpenFileName(self, "Open Image File", "",
-                                                  "Image Files (*.png *.jpg *.bmp *.tif *.tiff)")
-        if img_path:
-            self.img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-            if self.img is not None:
-                self.img = cv2.normalize(self.img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                # Optionally, resize the image
-                # self.img = cv2.resize(self.img, (256, 256))
-                self.mask = np.zeros(self.img.shape[:2], np.uint8)
-                self.filtered_img = self.img.copy()
-                self.shearlet_system = EdgeSystem(*self.img.shape)
-
-                # Update all filter tabs with the new image
-                for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
-                    tab = self.tab_widget.widget(i)
-                    if isinstance(tab, FilterTab):
-                        tab.set_input_image(self.img)
-
-                # Enable buttons that require an image
-                self.manual_interpretation_button.setEnabled(True)
-                self.clean_edges_button.setEnabled(True)
-
-                QMessageBox.information(self, "Image Loaded", "Image loaded successfully.")
-            else:
-                QMessageBox.warning(self, "Error", "Failed to load image.")
+    
 
     def clean_short_edges(self):
         current_tab = self.tab_widget.currentWidget()
@@ -2940,31 +3083,40 @@ class MyWindow(QMainWindow):
 
     def load_image(self):
         img_path, _ = QFileDialog.getOpenFileName(self, "Open Image File", "",
-                                                  "Image Files (*.png *.jpg *.bmp *.tif *.tiff)")
+                                                "Image Files (*.png *.jpg *.bmp *.tif *.tiff)")
         if img_path:
-            self.img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-            if self.img is not None:
-                self.img = cv2.normalize(self.img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                self.img = cv2.resize(self.img, (256, 256))
-                self.mask = np.zeros(self.img.shape[:2], np.uint8)
-                self.filtered_img = self.img.copy()
-                self.shearlet_system = EdgeSystem(*self.img.shape)
+            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                # Normalize the image
+                img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                
+                # Open preprocessing window
+                preprocess_dialog = PreprocessingWindow(img, self)
+                if preprocess_dialog.exec_() == QDialog.Accepted:
+                    # Get the masked image
+                    self.img = preprocess_dialog.get_masked_image()
+                    self.img = cv2.resize(self.img, (512, 512))
+                    self.mask = np.zeros(self.img.shape[:2], np.uint8)
+                    self.filtered_img = self.img.copy()
+                    self.shearlet_system = EdgeSystem(*self.img.shape)
 
-                # Update all tabs with the new image
-                for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
-                    tab = self.tab_widget.widget(i)
-                    if isinstance(tab, FilterTab):
-                        tab.set_input_image(self.img)
+                    # Update all filter tabs with the new image
+                    for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
+                        tab = self.tab_widget.widget(i)
+                        if isinstance(tab, FilterTab):
+                            tab.set_input_image(self.img)
 
-                # Enable buttons that require an image
-                self.manual_interpretation_button.setEnabled(True)
-                self.clean_edges_button.setEnabled(True)
+                    # Enable buttons that require an image
+                    self.manual_interpretation_button.setEnabled(True)
+                    self.clean_edges_button.setEnabled(True)
 
-                QMessageBox.information(self, "Image Loaded", "Image loaded successfully.")
+                    QMessageBox.information(self, "Image Loaded", 
+                                        "Image loaded and preprocessed successfully.")
+                else:
+                    QMessageBox.warning(self, "Cancelled", 
+                                    "Image preprocessing was cancelled.")
             else:
                 QMessageBox.warning(self, "Error", "Failed to load image.")
-
-
 
     def save_mask(self):
         if self.img is None:
