@@ -293,17 +293,26 @@ class LineItem(QGraphicsPathItem):
     def __init__(self):
         super().__init__()
         self.nodes = []
-        self.setPen(QPen(QColor('green'), 2))
+        # Set up pen
+        pen = QPen(QColor('green'))
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        self.setPen(pen)
+        
+        # Set flags to enable interaction
         self.setFlags(
-            QGraphicsItem.ItemIsSelectable  # Lines are selectable but not movable
+            QGraphicsItem.ItemIsSelectable |
+            QGraphicsItem.ItemIsFocusable
         )
-        self.setZValue(1)  # Ensure lines are above the background
-        self.update_path()  # Initialize the path
+        self.setAcceptHoverEvents(True)
+        self.setAcceptedMouseButtons(Qt.AllButtons)
+        self.setZValue(1)
 
     def add_node(self, node):
         self.nodes.append(node)
         node.lines.append(self)
-        node.setParentItem(self)  # Set the node's parent to this line
+        node.setParentItem(self)
         self.update_path()
 
     def remove_node(self, node):
@@ -316,23 +325,39 @@ class LineItem(QGraphicsPathItem):
     def update_path(self):
         path = QPainterPath()
         if self.nodes:
-            # Start the path at the first node's position
             path.moveTo(self.nodes[0].pos())
-            # Draw lines to subsequent nodes
             for node in self.nodes[1:]:
                 path.lineTo(node.pos())
         self.setPath(path)
 
-    def contextMenuEvent(self, event):
+    def mousePressEvent(self, event):
+        # Handle selection first
+        if event.button() == Qt.LeftButton:
+            self.setSelected(True)
+        elif event.button() == Qt.RightButton:
+            # Show context menu
+            self.showContextMenu(event)
+        super().mousePressEvent(event)
+
+    def showContextMenu(self, event):
         menu = QMenu()
         delete_action = menu.addAction("Delete Line")
-        action = menu.exec_(event.screenPos())
-        if action == delete_action:
-            # Access the parent window (ManualInterpretationWindow)
-            parent_window = self.scene().parent()
-            if hasattr(parent_window, 'delete_line'):
-                parent_window.delete_line(self)
+        
+        # Find the parent window (ManualInterpretationWindow)
+        scene = self.scene()
+        if scene:
+            view = scene.views()[0]  # Get the first view
+            parent_window = view.parent()
+            
+            if parent_window and hasattr(parent_window, 'delete_line'):
+                action = menu.exec_(event.screenPos())
+                if action == delete_action:
+                    parent_window.delete_line(self)
 
+    def contextMenuEvent(self, event):
+        # Intercept context menu event
+        self.showContextMenu(event)
+        event.accept()
 class Network(torch.nn.Module): # Neural Network for Hessian Edge Detection
     def __init__(self):
         super().__init__()
@@ -1320,9 +1345,16 @@ class ManualInterpretationWindow(QDialog):
     def show_overlay(self):
         # Update the scene to reflect edit mode
         for line in self.lines:
-            line.setFlags(QGraphicsItem.ItemIsSelectable)  # Lines are selectable but not movable
+            # Make sure lines are selectable
+            line.setFlag(QGraphicsItem.ItemIsSelectable, True)
+            
+            # Update line appearance
+            if line.isSelected():
+                line.setPen(QPen(QColor('red'), 3))  # Highlight selected lines
+            else:
+                line.setPen(QPen(QColor('green'), 2))  # Normal appearance
 
-        for line in self.lines:
+            # Update nodes
             for node in line.nodes:
                 if self.is_edit_mode:
                     node.setFlags(
@@ -1332,20 +1364,14 @@ class ManualInterpretationWindow(QDialog):
                     )
                 else:
                     node.setFlags(QGraphicsItem.ItemIsSelectable)
-
-        # Highlight selected items
-        for line in self.lines:
-            if line.isSelected():
-                line.setPen(QPen(QColor('green'), 3))  # Increased width for better visibility
-            else:
-                line.setPen(QPen(QColor('green'), 3))  # Keep consistent pen settings
-
-            for node in line.nodes:
+                
+                # Update node appearance
                 if node.isSelected():
                     node.setBrush(QColor('yellow'))
                 else:
                     node.setBrush(QColor('blue'))
-        # Refresh the scene to apply changes
+
+        # Refresh the scene
         self.scene.update()
 
     def eventFilter(self, source, event):
@@ -1488,18 +1514,30 @@ class ManualInterpretationWindow(QDialog):
         self.redo_stack.clear()
 
     def delete_line(self, line):
-        for node in line.nodes:
-            if line in node.lines:
-                node.lines.remove(line)
-        if line in self.lines:
-            self.lines.remove(line)
-        self.scene.removeItem(line)
-        self.show_overlay()
+        try:
+            # First remove all nodes
+            for node in line.nodes[:]:  # Use a copy of the list
+                if node in line.nodes:  # Check if node is still in the list
+                    node.lines.remove(line)  # Remove line reference from node
+                    if not node.lines:  # If node has no more lines, remove it
+                        self.scene.removeItem(node)
 
-        # Record action for undo
-        self.undo_stack.append(('delete_line', line))
-        self.redo_stack.clear()
+            # Then remove the line itself
+            if line in self.lines:
+                self.lines.remove(line)
+                self.scene.removeItem(line)
 
+            # Record action for undo
+            self.undo_stack.append(('delete_line', line))
+            self.redo_stack.clear()
+
+            # Update display
+            self.scene.update()
+            self.show_overlay()
+
+        except Exception as e:
+            print(f"Error in delete_line: {str(e)}")
+            traceback.print_exc()
     # Optional: Implement zoom functionality
     def wheelEvent(self, event):
         zoom_in_factor = 1.25
