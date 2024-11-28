@@ -59,6 +59,7 @@ from PyQt5.QtWidgets import QSpinBox
 # Define a NodeItem representing control points
 from skimage import exposure
 from skimage.util import img_as_float, img_as_ubyte
+import scipy 
 
 class PreprocessingWindow(QDialog):
     def __init__(self, image, parent=None):
@@ -257,8 +258,8 @@ class PreprocessingWindow(QDialog):
     def get_masked_image(self):
         return cv2.bitwise_and(self.current_image, self.current_image, mask=self.mask)
 class NodeItem(QGraphicsEllipseItem):
-    def __init__(self, x, y, radius=1, parent=None):
-        super().__init__(-radius, -radius, 2*radius, 2*radius, parent)
+    def __init__(self, x, y, radius=3, parent=None):
+        super().__init__(-radius, -radius, 2 * radius, 2 * radius, parent)
         self.setPos(x, y)
         self.setBrush(QColor('blue'))
         self.setPen(QPen(Qt.black))
@@ -271,14 +272,15 @@ class NodeItem(QGraphicsEllipseItem):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
+            # Notify all connected lines to update their paths
             for line in self.lines:
                 line.update_path()
         return super().itemChange(change, value)
 
     def contextMenuEvent(self, event):
-        # Access the parent ManualInterpretationWindow
+        # Access the parent window (ManualInterpretationWindow)
         parent_window = self.scene().parent()
-        if not isinstance(parent_window, ManualInterpretationWindow):
+        if not hasattr(parent_window, 'delete_node'):
             return
 
         menu = QMenu()
@@ -286,56 +288,50 @@ class NodeItem(QGraphicsEllipseItem):
         delete_action.triggered.connect(lambda: parent_window.delete_node(self))
         menu.addAction(delete_action)
         menu.exec_(event.screenPos())
-
 # Define a LineItem representing lines composed of nodes
 class LineItem(QGraphicsPathItem):
-    def __init__(self, nodes=None, parent=None):
+    def __init__(self):
         super().__init__()
-        self.nodes = nodes if nodes else []
-        pen = QPen(QColor('green'))  # Changed color to green for better contrast
-        pen.setWidth(1)  # Increased width for better visibility
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        self.setPen(pen)
+        self.nodes = []
+        self.setPen(QPen(QColor('green'), 2))
         self.setFlags(
             QGraphicsItem.ItemIsSelectable  # Lines are selectable but not movable
         )
         self.setZValue(1)  # Ensure lines are above the background
-        self.update_path()
-        self.parent = parent
-
-    def update_path(self):
-        path = QPainterPath()
-        if self.nodes:
-            path.moveTo(self.nodes[0].pos())
-            for node in self.nodes[1:]:
-                path.lineTo(node.pos())
-        self.setPath(path)
+        self.update_path()  # Initialize the path
 
     def add_node(self, node):
         self.nodes.append(node)
         node.lines.append(self)
+        node.setParentItem(self)  # Set the node's parent to this line
         self.update_path()
 
     def remove_node(self, node):
         if node in self.nodes:
             self.nodes.remove(node)
             node.lines.remove(self)
+            node.setParentItem(None)
             self.update_path()
+
+    def update_path(self):
+        path = QPainterPath()
+        if self.nodes:
+            # Start the path at the first node's position
+            path.moveTo(self.nodes[0].pos())
+            # Draw lines to subsequent nodes
+            for node in self.nodes[1:]:
+                path.lineTo(node.pos())
+        self.setPath(path)
 
     def contextMenuEvent(self, event):
         menu = QMenu()
         delete_action = menu.addAction("Delete Line")
         action = menu.exec_(event.screenPos())
         if action == delete_action:
-            # Remove the line and its nodes
-            for node in self.nodes:
-                self.scene().removeItem(node)
-            self.scene().removeItem(self)
-            # Remove from the parent's lines list
-            if self in self.parent.lines:
-                self.parent.lines.remove(self)
-
+            # Access the parent window (ManualInterpretationWindow)
+            parent_window = self.scene().parent()
+            if hasattr(parent_window, 'delete_line'):
+                parent_window.delete_line(self)
 
 class Network(torch.nn.Module): # Neural Network for Hessian Edge Detection
     def __init__(self):
@@ -686,18 +682,21 @@ class FilterTab(QWidget):
 
     def update_filter(self):
         if self.input_image is not None:
-            # Apply Gaussian filter if checkbox is checked
-            if self.gaussian_checkbox.isChecked():
-                sigma = self.gaussian_sigma.value() / 10.0  # Convert to float
-                self.gaussian_sigma_label.setText(f"{sigma:.1f}")
-                blurred_image = cv2.GaussianBlur(self.input_image, (0, 0), sigma)
+            # Apply global processing (from parent window)
+            if isinstance(self.parent(), MyWindow):
+                processed = self.parent().apply_global_processing(self.input_image)
             else:
-                blurred_image = self.input_image
+                processed = self.input_image.copy()
+                
+            # Apply Gaussian filter if enabled
+            if self.gaussian_checkbox.isChecked():
+                sigma = self.gaussian_sigma.value() / 10.0
+                processed = cv2.GaussianBlur(processed, (0, 0), sigma)
 
-            # Apply the specific filter (to be implemented in subclasses)
-            self.apply_filter(blurred_image)
+            # Apply the specific filter
+            self.apply_filter(processed)
 
-            # Apply skeletonization if checkbox is checked
+            # Apply skeletonization if enabled
             if self.skeletonize_checkbox.isChecked():
                 self.filtered_image = self.apply_skeletonization(self.filtered_image)
 
@@ -841,48 +840,270 @@ class ManualInterpretationWindow(QDialog):
         self.scene.setSceneRect(0, 0, width, height)
 
     def display_filtered_lines(self):
-        # Clear existing lines from the scene
+        """Display filtered lines preserving exact edge positions"""
+        # Clear existing lines
         for line in self.lines:
             for node in line.nodes:
                 self.scene.removeItem(node)
             self.scene.removeItem(line)
         self.lines.clear()
 
-        # Use the Edgelink class for edge linking
-        minlength = 3
-        edge_linker = edgelink(self.filtered_image, minlength)
-        edge_linker.get_edgelist()
-        edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
+        # Create binary image
+        _, binary = cv2.threshold(self.filtered_image, 127, 255, cv2.THRESH_BINARY)
 
-        # Optionally post-process edge lists (e.g., using cleanedgelist)
-        processed_edge_lists = cleanedgelist(edge_lists, minlength)  # Adjust min_length as needed
+        if hasattr(self.parent(), 'tab_widget'):
+            current_tab = self.parent().tab_widget.currentWidget()
+            is_dog_filter = isinstance(current_tab, DoGFilterTab)
+        else:
+            is_dog_filter = False
 
-        self.edge_map = self.filtered_image  # Or assign appropriately based on your Edgelink implementation
+        # Extract and convert edges/ridges to lines
+        if is_dog_filter:
+            lines = self.extract_ridge_lines(binary)
+        else:
+            lines = self.extract_edge_lines(binary)
 
-        # Add lines to the scene
-        for edge in processed_edge_lists:
-            if len(edge) >= 2:
-                # Simplify the edge if necessary
-                epsilon = 0.05 * cv2.arcLength(edge, True)
-                approx = cv2.approxPolyDP(edge, epsilon, True)
-                points = [(point[0][1], point[0][0]) for point in approx]
+        # Add lines to scene
+        for line_points in lines:
+            if len(line_points) >= 2:
+                self.add_line(line_points)
 
-                sampled_points = points  # Adjust sampling rate if needed
+        self.edge_map = binary
 
-                if len(sampled_points) >= 2:
-                    self.add_line(sampled_points)
+    def extract_edge_lines(self, binary_image):
+        """Extract edges preserving exact shape and position"""
+        try:
+            # Find contours with more precise method
+            contours, _ = cv2.findContours(
+                binary_image, 
+                cv2.RETR_LIST,
+                cv2.CHAIN_APPROX_NONE  # Get ALL contour points
+            )
+            
+            lines = []
+            min_length = 1  # Minimum line length to keep
+            
+            for contour in contours:
+                # Convert contour to points
+                points = [tuple(point[0]) for point in contour]
+                
+                if len(points) >= min_length:
+                    # Remove duplicate points while preserving shape
+                    points = self.remove_duplicates(points)
+                    # Add the entire contour as a single line
+                    lines.append(points)
 
+            return lines
+            
+        except Exception as e:
+            print(f"Error in edge extraction: {str(e)}")
+            return []
+    def extract_ridge_lines(self, binary_image):
+        # Find contours
+        contours, _ = cv2.findContours(binary_image, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+
+        lines = []
+        min_length = 3  # Adjust as needed
+
+        for contour in contours:
+            if len(contour) >= min_length:
+                # Reduce epsilon to better preserve the contour shape
+                epsilon = 0.005 * cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, epsilon, False)
+                points = [tuple(point[0]) for point in approx]
+                lines.append(points)
+
+        # Return the list of lines
+        return lines
+    def simplify_line(self, points, tolerance=5.0):
+        """Simplify line using Douglas-Peucker algorithm"""
+        if len(points) < 3:
+            return points
+
+        # Convert to numpy array
+        points = np.array(points)
+
+        # Recursively simplify the line
+        simplified_points = self.douglas_peucker(points, tolerance)
+        return simplified_points.tolist()
+    def douglas_peucker(self, points, tolerance):
+        """Recursive implementation of the Douglas-Peucker algorithm"""
+        if len(points) < 3:
+            return points
+
+        # Line between first and last point
+        start, end = points[0], points[-1]
+        line_vec = end - start
+        line_len_sq = np.sum(line_vec ** 2)
+
+        # Find the point with the maximum distance from the line
+        distances = np.abs(np.cross(line_vec, points - start)) / np.sqrt(line_len_sq)
+        max_dist_idx = np.argmax(distances)
+        max_dist = distances[max_dist_idx]
+
+        if max_dist > tolerance:
+            # Recursive call
+            left = self.douglas_peucker(points[:max_dist_idx+1], tolerance)
+            right = self.douglas_peucker(points[max_dist_idx:], tolerance)
+            return np.vstack((left[:-1], right))
+        else:
+            return np.vstack((start, end))
+    def remove_duplicates(self, points):
+        """Remove duplicate points while preserving line shape"""
+        if len(points) < 2:
+            return points
+            
+        result = [points[0]]
+        for i in range(1, len(points)):
+            if points[i] != points[i-1]:
+                result.append(points[i])
+        return result
+    def find_next_ridge_point(self, image, current, visited):
+        """Find next connected ridge point"""
+        y, x = current
+        
+        # Check 8-connected neighbors in order of priority
+        neighbors = [
+            (-1,0), (1,0), (0,-1), (0,1),  # Direct neighbors first
+            (-1,-1), (-1,1), (1,-1), (1,1)  # Diagonals second
+        ]
+        
+        for dy, dx in neighbors:
+            ny, nx = y + dy, x + dx
+            if ((ny, nx) not in visited and 
+                0 <= ny < image.shape[0] and 
+                0 <= nx < image.shape[1] and
+                image[ny, nx] > 0):
+                return (ny, nx)
+                
+        return None
+    def split_at_corners(self, points, angle_threshold=45):
+        """Split line at sharp corners"""
+        if len(points) < 3:
+            return [points]
+            
+        segments = []
+        current_segment = [points[0]]
+        
+        for i in range(1, len(points)-1):
+            current_segment.append(points[i])
+            
+            # Calculate angle
+            v1 = np.array(points[i]) - np.array(points[i-1])
+            v2 = np.array(points[i+1]) - np.array(points[i])
+            
+            if np.any(v1) and np.any(v2):
+                angle = np.abs(np.degrees(
+                    np.arctan2(np.cross(v1, v2), np.dot(v1, v2))
+                ))
+                
+                # Split at sharp corners
+                if angle < angle_threshold:
+                    if len(current_segment) >= 2:
+                        segments.append(current_segment)
+                    current_segment = [points[i]]
+                    
+        if len(current_segment) >= 2:
+            segments.append(current_segment)
+            
+        return segments
+    def split_into_segments(self, points, angle_threshold=60):
+        """Split polyline into segments at sharp angles."""
+        if len(points) < 3:
+            return [points]
+            
+        segments = []
+        current_segment = [points[0]]
+        
+        for i in range(1, len(points) - 1):
+            current_segment.append(points[i])
+            
+            # Calculate angle between segments
+            v1 = np.array(points[i]) - np.array(points[i-1])
+            v2 = np.array(points[i+1]) - np.array(points[i])
+            
+            if np.any(v1) and np.any(v2):  # Avoid zero vectors
+                angle = np.abs(np.degrees(np.arctan2(np.cross(v1, v2), np.dot(v1, v2))))
+                
+                # Split at sharp angles
+                if angle < angle_threshold and len(current_segment) > 2:
+                    segments.append(current_segment)
+                    current_segment = [points[i]]
+                    
+        current_segment.append(points[-1])
+        if len(current_segment) > 2:
+            segments.append(current_segment)
+            
+        return segments
+    def smooth_line(self, points, num_points=None):
+        """Smooth a line using cubic spline interpolation."""
+        if len(points) < 3:
+            return points
+            
+        points = np.array(points)
+        
+        # Calculate path length for each point
+        t = np.zeros(len(points))
+        for i in range(1, len(points)):
+            t[i] = t[i-1] + np.linalg.norm(points[i] - points[i-1])
+        
+        if num_points is None:
+            num_points = len(points)
+        
+        # Create smooth interpolated curve
+        t_new = np.linspace(0, t[-1], num_points)
+        
+        # Fit cubic spline
+        cs = scipy.interpolate.CubicSpline(t, points)
+        smooth_points = cs(t_new)
+        
+        return [(int(x), int(y)) for x, y in smooth_points]
+    def split_at_high_curvature(self, points, angle_threshold=45):
+        """Split line at points of high curvature."""
+        if len(points) < 3:
+            return [points]
+
+        segments = []
+        current_segment = [points[0]]
+        
+        for i in range(1, len(points) - 1):
+            current_segment.append(points[i])
+            
+            # Calculate angle between segments
+            v1 = np.array(points[i]) - np.array(points[i-1])
+            v2 = np.array(points[i+1]) - np.array(points[i])
+            
+            if len(v1) > 0 and len(v2) > 0:
+                angle = np.abs(np.degrees(
+                    np.arctan2(np.cross(v1, v2), np.dot(v1, v2))
+                ))
+                
+                # Split at high curvature points
+                if angle > angle_threshold and len(current_segment) > 2:
+                    segments.append(current_segment)
+                    current_segment = [points[i]]
+
+        current_segment.append(points[-1])
+        if len(current_segment) > 2:
+            segments.append(current_segment)
+
+        return segments
     def add_line(self, points):
-        line = LineItem(parent=self)
+        # Increase the tolerance value significantly to reduce the number of points
+        # Higher tolerance means fewer points
+        simplified_points = self.simplify_line(points, tolerance=0.5)
+        merging_points = self.merge_close_points(simplified_points, threshold=2) # threshold means
+        reduced_points = self.reduce_points(merging_points)
+
+        line = LineItem()
         line.setZValue(1)
-        line.setFlags(QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemIsMovable)
         self.scene.addItem(line)
         self.lines.append(line)
 
-
-        for x, y in points:
-            node = NodeItem(x, y, radius=2)  # Increased radius for better visibility
-            node.setZValue(2)  # Ensure nodes are above lines
+        # Create nodes only for the reduced points
+        for x, y in reduced_points:
+            node = NodeItem(int(x), int(y), radius=3)
+            node.setZValue(2) # the value of z is set to 2 which means
             self.scene.addItem(node)
             line.add_node(node)
 
@@ -890,6 +1111,51 @@ class ManualInterpretationWindow(QDialog):
         self.undo_stack.append(('add_line', line))
         self.redo_stack.clear()
 
+    def merge_close_points(self, points, threshold=2):
+        """Merge points that are very close to each other."""
+        if len(points) < 2:
+            return points
+
+        result = [points[0]]
+        for i in range(1, len(points)):
+            if euclidean_dist(points[i], points[i-1]) > threshold:
+                result.append(points[i])
+        return result
+    def reduce_points(self, points):
+        """
+        Reduce the number of points to only include significant ones:
+        - Start point
+        - End point
+        - Points where direction changes significantly
+        """
+        if len(points) <= 2:
+            return points
+
+        result = [points[0]]  # Always include start point
+        
+        # Angle threshold for determining significant direction changes (in degrees)
+        angle_threshold = 45
+        
+        for i in range(1, len(points) - 1):
+            # Calculate vectors
+            v1 = np.array(points[i]) - np.array(points[i-1])
+            v2 = np.array(points[i+1]) - np.array(points[i])
+            
+            # Calculate angle between vectors
+            dot_product = np.dot(v1, v2)
+            norms = np.linalg.norm(v1) * np.linalg.norm(v2)
+            
+            if norms != 0:  # Avoid division by zero
+                cos_angle = dot_product / norms
+                cos_angle = min(1.0, max(-1.0, cos_angle))  # Ensure value is in [-1, 1]
+                angle = np.degrees(np.arccos(cos_angle))
+                
+                # If angle is significant, include this point
+                if angle < (180 - angle_threshold) or angle > (180 + angle_threshold):
+                    result.append(points[i])
+        
+        result.append(points[-1])  # Always include end point
+        return result
     def toggle_drawing(self, checked):
         self.is_drawing = checked
         self.is_semi_auto = False
@@ -973,42 +1239,7 @@ class ManualInterpretationWindow(QDialog):
             lines.append(points)
 
         return lines
-    def process_and_display_lines(self): # New method for processing and displaying lines
-        # Clear existing lines from the scene
-        for line in self.lines:
-            for node in line.nodes:
-                self.scene.removeItem(node)
-            self.scene.removeItem(line)
-        self.lines.clear()
-
-        # Use the Edgelink class for edge linking
-        if self.use_edgelink:
-            minlength=3
-            edge_linker = edgelink(self.filtered_image, minlength)
-            edge_linker.get_edgelist()
-            edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
-            processed_edge_lists = cleanedgelist(edge_lists, minlength)  # Adjust min_length as needed
-        else:
-            # If edgelink is disabled, use the original filtered image
-            _, binary_image = cv2.threshold(self.filtered_image, 127, 255, cv2.THRESH_BINARY)
-            edge_lists = self.image_to_lines(binary_image)
-            processed_edge_lists = [np.array(edge) for edge in edge_lists if len(edge) > 0]
-
-        self.edge_map = self.filtered_image  # Or assign appropriately based on your Edgelink implementation
-
-        # Add lines to the scene
-        for edge in processed_edge_lists:
-            if len(edge) >= 2:
-                # Simplify the edge if necessary
-                epsilon = 0.05 * cv2.arcLength(edge, True)
-                approx = cv2.approxPolyDP(edge, epsilon, True)
-                points = [(point[0][1], point[0][0]) for point in approx]
-
-                sampled_points = points  # Adjust sampling rate if needed
-
-                if len(sampled_points) >= 2:
-                    self.add_line(sampled_points)
-
+    
     # **Optional Enhancement: Undo and Redo Methods**
     def undo_action(self):
         if not self.undo_stack:
@@ -1774,7 +2005,141 @@ class ShearletFilterTab(FilterTab):
     def open_manual_interpretation(self):
         pass
 
+class DoGFilterTab(FilterTab):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Difference of Gaussian Filter")
+        # self.create_filter_controls()
 
+    def create_filter_controls(self):
+        # Controls for two Gaussian kernels
+        kernel1_layout = QHBoxLayout()
+        kernel1_label = QLabel("Sigma 1 (Small):")
+        self.sigma1_slider = QSlider(Qt.Horizontal)
+        self.sigma1_slider.setRange(10, 50)  # 1.0 to 5.0
+        self.sigma1_slider.setValue(20)  # Default 2.0
+        self.sigma1_value = QLabel("2.0")
+        self.sigma1_slider.valueChanged.connect(self.update_filter)
+        kernel1_layout.addWidget(kernel1_label)
+        kernel1_layout.addWidget(self.sigma1_slider)
+        kernel1_layout.addWidget(self.sigma1_value)
+        self.controls_layout.addLayout(kernel1_layout)
+
+        kernel2_layout = QHBoxLayout()
+        kernel2_label = QLabel("Sigma 2 (Large):")
+        self.sigma2_slider = QSlider(Qt.Horizontal)
+        self.sigma2_slider.setRange(50, 150)  # 5.0 to 15.0
+        self.sigma2_slider.setValue(100)  # Default 10.0
+        self.sigma2_value = QLabel("10.0")
+        self.sigma2_slider.valueChanged.connect(self.update_filter)
+        kernel2_layout.addWidget(kernel2_label)
+        kernel2_layout.addWidget(self.sigma2_slider)
+        kernel2_layout.addWidget(self.sigma2_value)
+        self.controls_layout.addLayout(kernel2_layout)
+
+        # Kernel size control
+        ksize_layout = QHBoxLayout()
+        ksize_label = QLabel("Kernel Size:")
+        self.ksize_slider = QSlider(Qt.Horizontal)
+        self.ksize_slider.setRange(5, 31)  # Must be odd
+        self.ksize_slider.setValue(15)  # Default from paper
+        self.ksize_value = QLabel("15")
+        self.ksize_slider.valueChanged.connect(self.update_filter)
+        ksize_layout.addWidget(ksize_label)
+        ksize_layout.addWidget(self.ksize_slider)
+        ksize_layout.addWidget(self.ksize_value)
+        self.controls_layout.addLayout(ksize_layout)
+
+        # Feature type selection
+        feature_layout = QHBoxLayout()
+        self.feature_type = QComboBox()
+        self.feature_type.addItems(['Ridges (Light)', 'Valleys (Dark)', 'Both'])
+        self.feature_type.currentIndexChanged.connect(self.update_filter)
+        feature_layout.addWidget(QLabel("Detect:"))
+        feature_layout.addWidget(self.feature_type)
+        self.controls_layout.addLayout(feature_layout)
+    
+    def apply_filter(self, image):
+        if image is None:
+            return
+
+        # Get parameter values
+        sigma1 = self.sigma1_slider.value() / 10.0  # Smaller sigma
+        sigma2 = self.sigma2_slider.value() / 10.0  # Larger sigma
+        ksize = self.ksize_slider.value()
+        if ksize % 2 == 0:
+            ksize += 1  # Ensure odd kernel size
+
+        # Update labels
+        self.sigma1_value.setText(f"{sigma1:.1f}")
+        self.sigma2_value.setText(f"{sigma2:.1f}")
+        self.ksize_value.setText(str(ksize))
+
+        # Apply Gaussian blurs
+        g1 = cv2.GaussianBlur(image, (ksize, ksize), sigma1)
+        g2 = cv2.GaussianBlur(image, (ksize, ksize), sigma2)
+
+        # Compute DoG
+        dog = cv2.subtract(g1, g2)
+
+        # Enhance ridges using the detect_ridges method
+        ridge_measure = self.detect_ridges(dog)
+
+        # Normalize and convert to uint8
+        ridge_measure = cv2.normalize(ridge_measure, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+        # Threshold to create binary image
+        _, binary = cv2.threshold(ridge_measure, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # Save the binary image as filtered_image
+        self.filtered_image = binary
+        self.show_filtered_image()
+
+    def detect_ridges(self, image):
+        # Compute gradients
+        gx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
+        gy = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
+
+        # Compute gradient magnitude and orientation
+        mag = np.sqrt(gx**2 + gy**2)
+        angle = np.arctan2(gy, gx)
+
+        # Non-maximum suppression
+        nms = np.zeros_like(mag)
+        angle = angle * 180 / np.pi
+        angle[angle < 0] += 180
+
+        for i in range(1, mag.shape[0]-1):
+            for j in range(1, mag.shape[1]-1):
+                try:
+                    q = 255
+                    r = 255
+
+                    # Angle 0
+                    if (0 <= angle[i,j] < 22.5) or (157.5 <= angle[i,j] <= 180):
+                        q = mag[i, j+1]
+                        r = mag[i, j-1]
+                    # Angle 45
+                    elif 22.5 <= angle[i,j] < 67.5:
+                        q = mag[i+1, j-1]
+                        r = mag[i-1, j+1]
+                    # Angle 90
+                    elif 67.5 <= angle[i,j] < 112.5:
+                        q = mag[i+1, j]
+                        r = mag[i-1, j]
+                    # Angle 135
+                    elif 112.5 <= angle[i,j] < 157.5:
+                        q = mag[i-1, j-1]
+                        r = mag[i+1, j+1]
+
+                    if mag[i,j] >= q and mag[i,j] >= r:
+                        nms[i,j] = mag[i,j]
+                    else:
+                        nms[i,j] = 0
+                except IndexError as e:
+                    pass
+
+        return nms
 class EdgeLinkWindow(QDialog):
     edge_link_updated = pyqtSignal(np.ndarray)
     
@@ -2353,7 +2718,29 @@ class MyWindow(QMainWindow):
         self.add_filter_tab("Laplacian", LaplacianFilterTab)
         self.add_filter_tab("Roberts", RobertsFilterTab)
         self.add_filter_tab("HED", HEDFilterTab)  # Add HED tab
-
+        self.add_filter_tab("DoG", DoGFilterTab)  # Add DoG tab
+        # Add binarization controls below clean edges layout
+        binarize_layout = QHBoxLayout()
+        
+        # Binarization checkbox
+        self.binarize_checkbox = QCheckBox("Apply Binarization")
+        self.binarize_checkbox.stateChanged.connect(self.update_all_filters)
+        binarize_layout.addWidget(self.binarize_checkbox)
+        
+        # Threshold slider
+        self.binary_threshold = QSlider(Qt.Horizontal)
+        self.binary_threshold.setRange(0, 255)
+        self.binary_threshold.setValue(127)
+        self.binary_threshold.valueChanged.connect(self.update_all_filters)
+        
+        # Threshold value label
+        self.threshold_label = QLabel("127")
+        
+        binarize_layout.addWidget(QLabel("Threshold:"))
+        binarize_layout.addWidget(self.binary_threshold)
+        binarize_layout.addWidget(self.threshold_label)
+        
+        main_layout.addLayout(binarize_layout)
         # Add "+" tab for creating new tabs
         self.tab_widget.addTab(QWidget(), "+")
         self.tab_widget.tabBarClicked.connect(self.handle_tab_click)
@@ -2393,7 +2780,28 @@ class MyWindow(QMainWindow):
         main_layout.addWidget(self.manual_interpretation_button)
 
         self.createMenus()
+    def update_all_filters(self):
+        """Update all filter tabs when global settings change"""
+        if self.binarize_checkbox.isChecked():
+            threshold = self.binary_threshold.value()
+            self.threshold_label.setText(str(threshold))
+        
+        # Update all filter tabs
+        for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
+            tab = self.tab_widget.widget(i)
+            if isinstance(tab, FilterTab):
+                tab.update_filter()
 
+    def apply_global_processing(self, image):
+        """Apply global image processing settings before filter-specific processing"""
+        processed = image.copy()
+        
+        # Apply binarization if enabled
+        if self.binarize_checkbox.isChecked():
+            threshold = self.binary_threshold.value()
+            _, processed = cv2.threshold(processed, threshold, 255, cv2.THRESH_BINARY)
+        
+        return processed
     def add_filter_tab(self, filter_name, filter_class):
         tab = filter_class(self)
         self.tab_widget.insertTab(self.tab_widget.count() - 1, tab, filter_name)
@@ -2421,7 +2829,8 @@ class MyWindow(QMainWindow):
                 "Shearlet",
                 "Laplacian",
                 "Roberts",
-                "HED"  # Add HED to the list
+                "HED",  # Add HED to the list
+                "DoG"  # Add DoG to the list
             ]
             filter_name, ok = QInputDialog.getItem(self, "Select Filter", "Choose a filter:", filters, 0, False)
             if ok and filter_name:
@@ -2431,7 +2840,8 @@ class MyWindow(QMainWindow):
                     "Shearlet": ShearletFilterTab,
                     "Laplacian": LaplacianFilterTab,
                     "Roberts": RobertsFilterTab,
-                    "HED": HEDFilterTab  # Map "HED" to HEDFilterTab
+                    "HED": HEDFilterTab,  # Map "HED" to HEDFilterTab
+                    "DoG": DoGFilterTab  # Map "DoG" to DoGFilterTab
                 }
                 filter_class = filter_classes.get(filter_name)
                 if filter_class:
@@ -2453,12 +2863,11 @@ class MyWindow(QMainWindow):
             # Get 'min_size' from the spin box
             min_size = self.min_size_spinbox.value()
             
-            # Apply skeletonization first if not already done
-            if not current_tab.skeletonize_checkbox.isChecked():
-                image = skeletonize(image > 0).astype(np.uint8) * 255
-
+            # Ensure binary image without skeletonization
+            _, binary_image = cv2.threshold(image, 127, 255, cv2.THRESH_BINARY)
+            
             # Label connected components
-            labeled, num_features = measure.label(image > 0, return_num=True, connectivity=2)
+            labeled, num_features = measure.label(binary_image > 0, return_num=True, connectivity=2)
             
             # Filter components based on size
             cleaned_image = np.zeros_like(image)
@@ -3126,7 +3535,7 @@ class MyWindow(QMainWindow):
                 if preprocess_dialog.exec_() == QDialog.Accepted:
                     # Get the masked image
                     self.img = preprocess_dialog.get_masked_image()
-                    self.img = cv2.resize(self.img, (1024, 1024))
+                    self.img = cv2.resize(self.img, (1024, 1024)) 
                     self.mask = np.zeros(self.img.shape[:2], np.uint8)
                     self.filtered_img = self.img.copy()
                     self.shearlet_system = EdgeSystem(*self.img.shape)
