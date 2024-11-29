@@ -60,7 +60,7 @@ from PyQt5.QtWidgets import QSpinBox
 from skimage import exposure
 from skimage.util import img_as_float, img_as_ubyte
 import scipy 
-
+from utility import edgelink, seglist  # Add seglist to import
 class PreprocessingWindow(QDialog):
     def __init__(self, image, parent=None):
         super().__init__(parent)
@@ -665,16 +665,23 @@ class FilterTab(QWidget):
         self.create_filter_controls()
     def open_edge_link_window(self):
         if self.filtered_image is None:
-            QMessageBox.warning(self, "Error", "Apply a filter first")
+            QMessageBox.warning(self, "No Image", "Please apply a filter first.")
             return
-            
-        # Create new window or show existing
-        if not self.edge_link_window:
-            self.edge_link_window = EdgeLinkWindow(self.filtered_image, self)
-            # Connect signal to update filtered image
-            self.edge_link_window.edge_link_updated.connect(self.update_from_edge_link)
-        
-        self.edge_link_window.show()
+
+        # Create an instance of EdgeLinkWindow
+        self.edge_link_window = EdgeLinkWindow(self.filtered_image, parent=self)
+
+        # Connect the edge_link_updated signal to update_filtered_image method
+        self.edge_link_window.edge_link_updated.connect(self.update_filtered_image)
+
+        # Show the EdgeLinkWindow modally
+        self.edge_link_window.exec_()
+
+    def update_filtered_image(self, updated_image):
+        # Update the filtered_image with the updated image
+        self.filtered_image = updated_image.copy()
+        # Refresh the display
+        self.show_filtered_image()
 
     def update_from_edge_link(self, new_image):
         """Update the filtered image from edge link results"""
@@ -732,16 +739,17 @@ class FilterTab(QWidget):
 
     def open_edge_link_window(self):
         if self.filtered_image is None:
-            QMessageBox.warning(self, "Error", "Apply a filter first")
+            QMessageBox.warning(self, "No Image", "Please apply a filter first.")
             return
-        
-        # Create new window if not exists or show existing
-        if self.edge_link_window is None:
-            self.edge_link_window = EdgeLinkWindow(self.filtered_image, self)
-            self.edge_link_window.edge_link_updated.connect(self.update_from_edge_link)
-        
-        self.edge_link_window.show()
-        self.edge_link_window.process_and_display()  # Force initial update
+
+        # Create an instance of EdgeLinkWindow
+        self.edge_link_window = EdgeLinkWindow(self.filtered_image, parent=self)
+
+        # Connect the edge_link_updated signal to update_filtered_image method
+        self.edge_link_window.edge_link_updated.connect(self.update_filtered_image)
+
+        # Show the EdgeLinkWindow modally
+        self.edge_link_window.exec_()
 
     def apply_filter(self, image):
         # To be implemented in subclasses
@@ -2178,6 +2186,7 @@ class DoGFilterTab(FilterTab):
                     pass
 
         return nms
+    
 class EdgeLinkWindow(QDialog):
     edge_link_updated = pyqtSignal(np.ndarray)
     
@@ -2186,12 +2195,36 @@ class EdgeLinkWindow(QDialog):
         self.image = image
         self.edge_linked_image = None
         self.parent = parent
+        self.edge_linker = None
+        self.processed_edges = [] 
+        self.segment_list = []
         self.initUI()
+        
+    def create_slider(self, name, min_val, max_val, default_val, tooltip_text):
+        group = QGroupBox(name)
+        layout = QVBoxLayout()
+        
+        slider = QSlider(Qt.Horizontal)
+        slider.setMinimum(min_val)
+        slider.setMaximum(max_val)
+        slider.setValue(default_val)
+        slider.setToolTip(tooltip_text)  # Set tooltip for the slider
+        
+        value_label = QLabel(str(default_val))
+        value_label.setToolTip(tooltip_text)  # Set tooltip for the label
+        slider.valueChanged.connect(lambda v: value_label.setText(str(v)))
+        slider.valueChanged.connect(self.process_and_display)
+        
+        layout.addWidget(slider)
+        layout.addWidget(value_label)
+        group.setLayout(layout)
+        group.setToolTip(tooltip_text)  # Set tooltip for the group box
+        
+        return group
 
     def initUI(self):
-        self.setWindowTitle('Edge Link Visualization')
+        self.setWindowTitle('Geological Fracture Edge Link')
         self.setGeometry(100, 100, 800, 800)
-
         layout = QVBoxLayout()
 
         # Create matplotlib figure
@@ -2199,119 +2232,259 @@ class EdgeLinkWindow(QDialog):
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas)
 
-        # Create sliders
-        self.min_length_slider = self.create_slider("Minimum Edge Length", 1, 50, 10)
-        self.max_gap_slider = self.create_slider("Maximum Gap", 1, 20, 2)
-        self.min_angle_slider = self.create_slider("Minimum Angle", 0, 90, 20)
+        # Controls group
+        controls_group = QGroupBox("Edge Detection Parameters")
+        controls_layout = QVBoxLayout()
 
-        layout.addWidget(self.min_length_slider)
-        layout.addWidget(self.max_gap_slider)
-        layout.addWidget(self.min_angle_slider)
+        # Sliders with tooltips
+        self.min_length_slider = self.create_slider(
+            "Minimum Fracture Length", 5, 100, 20,
+            "Sets the minimum length for detected fractures. Increasing this value filters out shorter fractures."
+        )
+        self.max_gap_slider = self.create_slider(
+            "Maximum Fracture Gap", 1, 30, 5,
+            "Defines the maximum allowed gap between fracture segments when merging. Larger values allow larger gaps."
+        )
+        self.min_angle_slider = self.create_slider(
+            "Minimum Junction Angle", 15, 165, 45,
+            "Specifies the minimum angle at junctions between fracture segments. Adjust to control merging based on angle."
+        )
+        self.straightness_slider = self.create_slider(
+            "Fracture Straightness", 1, 20, 5,
+            "Controls the straightness threshold for filtering fractures. Lower values keep straighter fractures."
+        )
+        self.segment_tol_slider = self.create_slider(
+            "Segmentation Tolerance", 1, 50, 10,
+            "Sets the tolerance for segmenting fractures. Lower values result in more segments."
+        )
+        # Add sliders to layout
+        for control in [self.min_length_slider, self.max_gap_slider, 
+                       self.min_angle_slider, self.straightness_slider, 
+                       self.segment_tol_slider]:
+            controls_layout.addWidget(control)
 
-        # Add apply button
-        self.apply_button = QPushButton("Apply to Main Window")
+        controls_group.setLayout(controls_layout)
+        layout.addWidget(controls_group)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.segment_button = QPushButton("Segment Fractures")
+        self.segment_button.clicked.connect(self.segment_fractures)
+        self.apply_button = QPushButton("Apply")
         self.apply_button.clicked.connect(self.apply_to_main)
-        layout.addWidget(self.apply_button)
-
+        
+        button_layout.addWidget(self.segment_button)
+        button_layout.addWidget(self.apply_button)
+        layout.addLayout(button_layout)
+        
         self.setLayout(layout)
-        
-        # Initial processing
         self.process_and_display()
-
-    def create_slider(self, name, min_val, max_val, default_val):
-        container = QWidget()
-        layout = QHBoxLayout()
-        
-        label = QLabel(name)
-        layout.addWidget(label)
-        
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(min_val, max_val)  
-        slider.setValue(default_val)
-        slider.setTickPosition(QSlider.TicksBelow)
-        # Direct connection to process_and_display
-        slider.valueChanged.connect(lambda: self.process_and_display())
-        
-        value_label = QLabel(str(default_val))
-        slider.valueChanged.connect(lambda v: value_label.setText(str(v)))
-        
-        layout.addWidget(slider)
-        layout.addWidget(value_label)
-        
-        container.setLayout(layout)
-        return container
 
     def process_and_display(self):
         if self.image is None:
             return
 
-        # Get current values
+        # Get slider values
         min_length = self.min_length_slider.findChild(QSlider).value()
         max_gap = self.max_gap_slider.findChild(QSlider).value()
         min_angle = self.min_angle_slider.findChild(QSlider).value()
+        straightness = self.straightness_slider.findChild(QSlider).value()
 
-        # Process edges
-        edge_linker = edgelink(self.image, min_length)
-        edge_linker.get_edgelist()
-        edge_lists = [np.array(edge) for edge in edge_linker.edgelist if len(edge) > 0]
-        processed_edges = self.post_process_edges(edge_lists, max_gap, min_angle)
-
-        # Create and store output image
+        # Process image without transposing
+        self.edge_linker = edgelink(self.image, min_length)
+        self.edge_linker.get_edgelist()
+        
+        # Process edges with original orientation
+        edge_lists = [np.array(edge) for edge in self.edge_linker.edgelist if len(edge) > 0]
+        filtered_edges = self.filter_by_straightness(edge_lists, straightness)
+        processed_edges = self.process_geological_edges(filtered_edges, max_gap, min_angle)
+        
+        # Save for later use
+        self.processed_edges = processed_edges
+        
+        # Create and display results
         self.edge_linked_image = self.create_edge_image(processed_edges)
-        
-        # Update visualization
-        self.visualize_edge_lists(processed_edges)
-        
-        # Emit signal with result immediately
-        self.edge_link_updated.emit(self.edge_linked_image)
+        self.visualize_edges(processed_edges)
 
-
-    def create_edge_image(self, edge_lists):
-        edge_image = np.zeros(self.image.shape, dtype=np.uint8)
+    def filter_by_straightness(self, edge_lists, straightness_threshold):
+        filtered_edges = []
         for edge in edge_lists:
-            for point in edge:
-                if 0 <= point[0] < edge_image.shape[0] and 0 <= point[1] < edge_image.shape[1]:
-                    edge_image[int(point[0]), int(point[1])] = 255
-        return edge_image
+            if len(edge) >= 3:
+                total_dev = 0
+                for i in range(1, len(edge)-1):
+                    dev = self.point_to_line_distance(edge[i], edge[0], edge[-1])
+                    total_dev += dev
+                avg_dev = total_dev / (len(edge) - 2)
+                if avg_dev < straightness_threshold:
+                    filtered_edges.append(edge)
+        return filtered_edges
 
-    def visualize_edge_lists(self, edge_lists):
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        edge_image = self.create_edge_image(edge_lists)
-        ax.imshow(edge_image, cmap='gray')
-        ax.axis('off')
-        self.canvas.draw()
+    def point_to_line_distance(self, point, line_start, line_end):
+        if np.array_equal(line_start, line_end):
+            return np.linalg.norm(point - line_start)
+            
+        line_vec = line_end - line_start
+        point_vec = point - line_start
+        line_len = np.linalg.norm(line_vec)
+        line_unitvec = line_vec / line_len
+        point_proj_len = np.dot(point_vec, line_unitvec)
+        
+        if point_proj_len < 0:
+            return np.linalg.norm(point_vec)
+        elif point_proj_len > line_len:
+            return np.linalg.norm(point - line_end)
+        else:
+            point_proj = line_start + line_unitvec * point_proj_len
+            return np.linalg.norm(point - point_proj)
 
-    def post_process_edges(self, edge_lists, max_gap, min_angle):
+    def process_geological_edges(self, edge_lists, max_gap, min_angle):
         processed_edges = []
+        
         for edge in edge_lists:
-            new_edge = [edge[0]]
-            for i in range(1, len(edge)):
-                if self.point_distance(new_edge[-1], edge[i]) <= max_gap:
-                    if len(new_edge) < 2 or self.angle_between_points(new_edge[-2], new_edge[-1], edge[i]) >= min_angle:
-                        new_edge.append(edge[i])
-            if len(new_edge) > 1:
-                processed_edges.append(np.array(new_edge))
+            if len(edge) < 3:
+                continue
+                
+            # Split into segments
+            segments = []
+            current_segment = [edge[0]]
+            
+            for i in range(1, len(edge) - 1):
+                current_segment.append(edge[i])
+                v1 = edge[i] - edge[i-1]
+                v2 = edge[i+1] - edge[i]
+                
+                if np.any(v1) and np.any(v2):
+                    # Convert 2D vectors to 3D for cross product
+                    v1_3d = np.array([v1[0], v1[1], 0])
+                    v2_3d = np.array([v2[0], v2[1], 0])
+                    angle = np.abs(np.degrees(
+                        np.arctan2(np.linalg.norm(np.cross(v1_3d, v2_3d)), np.dot(v1, v2))
+                    ))
+                    if angle < min_angle:
+                        if len(current_segment) >= 2:
+                            segments.append(np.array(current_segment))
+                        current_segment = [edge[i]]
+            
+            current_segment.append(edge[-1])
+            if len(current_segment) >= 2:
+                segments.append(np.array(current_segment))
+                
+            # Merge segments
+            i = 0
+            while i < len(segments):
+                j = i + 1
+                while j < len(segments):
+                    seg1 = segments[i]
+                    seg2 = segments[j]
+                    dist = np.linalg.norm(seg1[-1] - seg2[0])
+                    
+                    if dist <= max_gap:
+                        v1 = seg1[-1] - seg1[-2]
+                        v2 = seg2[1] - seg2[0]
+                        angle = np.abs(np.degrees(
+                            np.arctan2(np.cross(v1, v2), np.dot(v1, v2))
+                        ))
+                        if angle >= min_angle:
+                            segments[i] = np.vstack((seg1, seg2))
+                            segments.pop(j)
+                            continue
+                    j += 1
+                i += 1
+                
+            processed_edges.extend(segments)
+            
         return processed_edges
 
-    def point_distance(self, p1, p2):
-        return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
-
-    def angle_between_points(self, p1, p2, p3):
-        v1 = np.array([p1[0] - p2[0], p1[1] - p2[1]])
-        v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
+    def create_edge_image(self, edges):
+        height, width = self.image.shape[:2]
+        edge_image = np.zeros((height, width), dtype=np.uint8)
         
-        if np.all(v1 == 0) or np.all(v2 == 0):
-            return 0
+        for edge in edges:
+            points = edge.astype(np.int32)
+            for i in range(len(points)-1):
+                # Swap x,y coordinates for OpenCV line drawing
+                p1 = (int(points[i][1]), int(points[i][0]))  # Swap coordinates
+                p2 = (int(points[i+1][1]), int(points[i+1][0]))  # Swap coordinates
+                cv2.line(edge_image, p1, p2, 255, 1)
+        
+        return edge_image
+
+    
+    def visualize_edges(self, edges):
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        
+        # Display image with correct orientation
+        ax.imshow(self.image, cmap='gray', alpha=0.5, origin='upper')
+        
+        # Use a colormap to represent some property, e.g., edge length
+        lengths = [len(edge) for edge in edges]
+        norm = plt.Normalize(vmin=min(lengths), vmax=max(lengths))
+        cmap = plt.cm.jet
+        
+        for edge in edges:
+            length = len(edge)
+            color = cmap(norm(length))
+            ax.plot(edge[:, 1], edge[:, 0], '-', color=color, linewidth=2)
             
-        cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-        cos_angle = np.clip(cos_angle, -1.0, 1.0)
-        return np.degrees(np.arccos(cos_angle))
+        ax.axis('off')
+        # Add a colorbar to represent edge lengths
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = self.figure.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label('Edge Length')
+        self.canvas.draw()
+
+    def segment_fractures(self):
+        if self.processed_edges:
+            tol = self.segment_tol_slider.findChild(QSlider).value()
+            # Use the existing 'seglist' function
+            self.segment_list = seglist(self.processed_edges, tol)
+            self.visualize_segments()
+            # Update the edge-linked image to include segments
+            self.edge_linked_image = self.create_edge_image(self.segment_list)
+
+    def visualize_segments(self):
+        if not self.segment_list:
+            return
+                
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+            
+        # Display image with correct orientation
+        ax.imshow(self.image, cmap='gray', alpha=0.5, origin='upper')
+            
+        # Use a colormap to represent some property, e.g., segment length
+        lengths = [len(segment) for segment in self.segment_list]
+        norm = plt.Normalize(vmin=min(lengths), vmax=max(lengths))
+        cmap = plt.cm.jet
+        
+        for segment in self.segment_list:
+            length = len(segment)
+            color = cmap(norm(length))
+            ax.plot(segment[:, 1], segment[:, 0], '-', color=color, linewidth=2)
+                
+        ax.axis('off')
+        # Add a colorbar to represent segment lengths
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = self.figure.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label('Segment Length')
+        self.canvas.draw()
 
     def apply_to_main(self):
+        if self.segment_list:
+            # Use the segmented edges to create the final image
+            self.edge_linked_image = self.create_edge_image(self.segment_list)
+        else:
+            # Ensure the image is processed with the latest parameters
+            self.process_and_display()
+            # edge_linked_image is already updated in process_and_display()
+
         if self.edge_linked_image is not None:
+            # Emit the signal with the updated image
             self.edge_link_updated.emit(self.edge_linked_image)
-            self.accept()
+            self.accept()  # Close the dialog
 
 class PrecisionRecallDialog(QDialog):
     def __init__(self, parent=None, **filter_data):
