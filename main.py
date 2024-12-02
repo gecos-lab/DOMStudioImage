@@ -733,9 +733,169 @@ class FilterTab(QWidget):
                 self.filtered_image = self.apply_skeletonization(self.filtered_image)
 
             self.show_filtered_image()
+    def get_main_window(self):
+        """Helper method to get reference to main window"""
+        parent = self.parent()
+        while parent:
+            if isinstance(parent, MyWindow):
+                return parent
+            parent = parent.parent()
+        return None
+    def prune_skeleton(self, skeleton, min_branch_length=10):
+        """Remove small branches from skeleton while preserving main structure"""
+        # Find endpoints and branch points
+        kernel = np.array([[1, 1, 1],
+                        [1, 10, 1],
+                        [1, 1, 1]], dtype=np.uint8)
+        
+        skeleton_uint8 = skeleton.astype(np.uint8)
+        filtered = cv2.filter2D(skeleton_uint8, -1, kernel)
+        
+        # Points with value > 11 are branch points (more than 1 neighbor)
+        # Points with value == 11 are endpoints (exactly 1 neighbor)
+        branch_points = filtered > 11
+        endpoints = filtered == 11
+        
+        # Initialize output
+        pruned = skeleton.copy()
+        changes = True
+        
+        while changes:
+            changes = False
+            
+            # Find current endpoints
+            filtered = cv2.filter2D(pruned.astype(np.uint8), -1, kernel)
+            current_endpoints = filtered == 11
+            
+            for y, x in zip(*np.where(current_endpoints)):
+                # Check if this endpoint is part of a small branch
+                visited = set()
+                current = (y, x)
+                branch = [current]
+                
+                while True:
+                    # Get neighbors of current point
+                    y, x = current
+                    neighbors = []
+                    
+                    for dy in [-1, 0, 1]:
+                        for dx in [-1, 0, 1]:
+                            ny, nx = y + dy, x + dx
+                            if (ny, nx) not in visited and 0 <= ny < pruned.shape[0] and 0 <= nx < pruned.shape[1]:
+                                if pruned[ny, nx]:
+                                    neighbors.append((ny, nx))
+                    
+                    if not neighbors:
+                        break
+                        
+                    # If we hit a branch point or the branch is long enough, keep it
+                    if len(neighbors) > 1 or len(branch) >= min_branch_length:
+                        break
+                        
+                    visited.add(current)
+                    current = neighbors[0]
+                    branch.append(current)
+                
+                # Remove branch if it's too short and doesn't connect important points
+                if len(branch) < min_branch_length:
+                    for py, px in branch:
+                        if not branch_points[py, px]:  # Don't remove branch points
+                            pruned[py, px] = 0
+                            changes = True
+        
+        return pruned
 
+    def better_skeletonize(self, binary_image, distance_threshold=35):
+        try:
+            # Initial binary image processing - dark ridges are 0s
+            _, binary_image = cv2.threshold(binary_image, 127, 255, cv2.THRESH_BINARY)
+            print(f"Initial binary sum: {np.sum(binary_image > 0)}")
+
+            # Get dark ridges
+            dark_ridges = cv2.bitwise_not(binary_image)
+            
+            # Distance transform for ridge detection
+            dist_transform = cv2.distanceTransform(dark_ridges, cv2.DIST_L2, 5)
+            max_width = np.max(dist_transform)
+            
+            # Normalize distance transform
+            dist_transform = cv2.normalize(dist_transform, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            
+            # Threshold distance transform to get ridge cores
+            _, ridge_cores = cv2.threshold(dist_transform, 50, 255, cv2.THRESH_BINARY)
+            
+            # Enhance ridges with morphology
+            kernel_size = max(3, int(max_width * 0.2))
+            if kernel_size % 2 == 0:
+                kernel_size += 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            
+            # Clean ridge cores
+            ridge_cores = cv2.morphologyEx(ridge_cores, cv2.MORPH_CLOSE, kernel)
+            ridge_cores = cv2.morphologyEx(ridge_cores, cv2.MORPH_OPEN, kernel)
+            
+            print(f"Ridge cores sum: {np.sum(ridge_cores > 0)}")
+            
+            # Skeletonize the ridge cores
+            skeleton = thin(ridge_cores > 0)
+            skeleton = skeleton.astype(np.uint8) * 255
+            
+            # Component filtering with reduced threshold
+            retval, labels, stats, _ = cv2.connectedComponentsWithStats(skeleton, connectivity=8)
+            final_skeleton = np.zeros_like(skeleton, dtype=np.uint8)
+            
+            # Very small minimum size to preserve detail
+            min_size = max(2, int(max_width * 0.05))  # Reduced threshold
+            
+            for label in range(1, retval):
+                if stats[label, cv2.CC_STAT_AREA] >= min_size:
+                    final_skeleton[labels == label] = 255
+                    
+            print(f"Final skeleton sum: {np.sum(final_skeleton > 0)}")
+            
+            # Invert back for light ridges if needed
+            if np.sum(binary_image > 0) > np.sum(binary_image == 0):
+                final_skeleton = cv2.bitwise_not(final_skeleton)
+                
+            return final_skeleton
+
+        except Exception as e:
+            print(f"Better skeletonization error: {str(e)}")
+            traceback.print_exc()
+            return binary_image
     def apply_skeletonization(self, image):
-        return skeletonize(image > 0).astype(np.uint8) * 255
+        """Apply skeletonization with special handling for ridges"""
+        try:
+            # Get main window and current tab safely
+            main_window = self.get_main_window()
+            if main_window and hasattr(main_window, 'tab_widget'):
+                current_tab = main_window.tab_widget.currentWidget()
+                is_ridge_mode = isinstance(current_tab, DoGFilterTab)
+            else:
+                is_ridge_mode = False
+
+            if is_ridge_mode:
+                # Ridge processing
+                _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                is_dark_ridge = np.sum(binary == 0) > np.sum(binary == 255)
+                
+                if is_dark_ridge:
+                    binary = cv2.bitwise_not(binary)
+                
+                # Use better skeletonization for ridges
+                skeleton = self.better_skeletonize(binary, distance_threshold=35)
+                
+                if is_dark_ridge:
+                    skeleton = cv2.bitwise_not(skeleton)
+            else:
+                # Standard edge processing
+                skeleton = skeletonize(image > 0).astype(np.uint8) * 255
+                
+            return skeleton
+            
+        except Exception as e:
+            print(f"Skeletonization error: {str(e)}")
+            return image.copy()
 
     def open_edge_link_window(self):
         if self.filtered_image is None:
@@ -840,6 +1000,13 @@ class ManualInterpretationWindow(QDialog):
         self.toggle_nodes_button.clicked.connect(self.toggle_nodes_visibility)
         button_layout.addWidget(self.toggle_nodes_button)
 
+         # Add Hide Lines button after Hide Nodes button
+        self.toggle_lines_button = QPushButton("Hide Lines")
+        self.toggle_lines_button.setCheckable(True)
+        self.toggle_lines_button.setChecked(True)  # Initially, lines are visible
+        self.toggle_lines_button.clicked.connect(self.toggle_lines_visibility)
+        button_layout.addWidget(self.toggle_lines_button)
+
         # **Optional Enhancement: Undo and Redo Buttons**
         undo_redo_layout = QHBoxLayout()
         self.undo_button = QPushButton("Undo")
@@ -899,10 +1066,18 @@ class ManualInterpretationWindow(QDialog):
         # Add lines to scene
         for line_points in lines:
             if len(line_points) >= 2:
-                self.add_line(line_points)
+                self.add_line(line_points, is_ridge=is_dog_filter)
 
         self.edge_map = binary
+    def toggle_lines_visibility(self, checked):
+        """Toggle visibility of all lines"""
+        if checked:
+            self.toggle_lines_button.setText("Hide Lines")
+        else:
+            self.toggle_lines_button.setText("Show Lines")
 
+        for line in self.lines:
+            line.setVisible(checked)
     def extract_edge_lines(self, binary_image):
         """Extract edges preserving exact shape and position"""
         try:
@@ -932,22 +1107,33 @@ class ManualInterpretationWindow(QDialog):
             print(f"Error in edge extraction: {str(e)}")
             return []
     def extract_ridge_lines(self, binary_image):
-        # Find contours
-        contours, _ = cv2.findContours(binary_image, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+        """Extract ridge lines preserving exact shape and position for DoG filter output"""
+        try:
+            # Use the same precise method as in extract_edge_lines
+            contours, _ = cv2.findContours(
+                binary_image,
+                cv2.RETR_LIST,
+                cv2.CHAIN_APPROX_NONE  # Get all contour points
+            )
 
-        lines = []
-        min_length = 3  # Adjust as needed
+            lines = []
+            min_length = 1  # Set minimum length to 1 to include all lines
 
-        for contour in contours:
-            if len(contour) >= min_length:
-                # Reduce epsilon to better preserve the contour shape
-                epsilon = 0.005 * cv2.arcLength(contour, True)
-                approx = cv2.approxPolyDP(contour, epsilon, False)
-                points = [tuple(point[0]) for point in approx]
-                lines.append(points)
+            for contour in contours:
+                # Convert contour to points
+                points = [tuple(point[0]) for point in contour]
 
-        # Return the list of lines
-        return lines
+                if len(points) >= min_length:
+                    # Remove duplicate points while preserving shape
+                    points = self.remove_duplicates(points)
+                    # Add the entire contour as a single line
+                    lines.append(points)
+
+            return lines
+
+        except Exception as e:
+            print(f"Error in ridge line extraction: {str(e)}")
+            return []
     def simplify_line(self, points, tolerance=5.0):
         """Simplify line using Douglas-Peucker algorithm"""
         if len(points) < 3:
@@ -961,6 +1147,7 @@ class ManualInterpretationWindow(QDialog):
         return simplified_points.tolist()
     def douglas_peucker(self, points, tolerance):
         """Recursive implementation of the Douglas-Peucker algorithm"""
+        # Douglas-Peucker algorithm is an algorithm for reducing the number of points in a curve, useful for simplification
         if len(points) < 3:
             return points
 
@@ -985,12 +1172,14 @@ class ManualInterpretationWindow(QDialog):
         """Remove duplicate points while preserving line shape"""
         if len(points) < 2:
             return points
-            
+                
         result = [points[0]]
         for i in range(1, len(points)):
-            if points[i] != points[i-1]:
+            # Compare points using numpy's array equality check
+            if not np.array_equal(points[i], points[i-1]):
                 result.append(points[i])
-        return result
+                
+        return np.array(result)
     def find_next_ridge_point(self, image, current, visited):
         """Find next connected ridge point"""
         y, x = current
@@ -1121,12 +1310,22 @@ class ManualInterpretationWindow(QDialog):
             segments.append(current_segment)
 
         return segments
-    def add_line(self, points):
-        # Increase the tolerance value significantly to reduce the number of points
-        # Higher tolerance means fewer points
-        simplified_points = self.simplify_line(points, tolerance=0.5)
-        merging_points = self.merge_close_points(simplified_points, threshold=2) # threshold means
-        reduced_points = self.reduce_points(merging_points)
+    def add_line(self, points, is_ridge=False):
+        """
+        Add a line to the scene with optional simplification.
+
+        Parameters:
+            points (List[Tuple[int, int]]): List of (x, y) points defining the line.
+            is_ridge (bool): Flag indicating if the line is a ridge. If True, skip simplification.
+        """
+        if is_ridge:
+            # Skip simplification to preserve ridge shape
+            reduced_points = self.remove_duplicates(points)
+        else:
+            # Apply simplification steps for edge lines
+            simplified_points = self.simplify_line(points, tolerance=0.5)
+            merging_points = self.merge_close_points(simplified_points, threshold=2)
+            reduced_points = self.reduce_points(merging_points)
 
         line = LineItem()
         line.setZValue(1)
@@ -1136,7 +1335,7 @@ class ManualInterpretationWindow(QDialog):
         # Create nodes only for the reduced points
         for x, y in reduced_points:
             node = NodeItem(int(x), int(y), radius=3)
-            node.setZValue(2) # the value of z is set to 2 which means
+            node.setZValue(2)  # Ensure nodes are above lines
             self.scene.addItem(node)
             line.add_node(node)
 
@@ -1383,111 +1582,162 @@ class ManualInterpretationWindow(QDialog):
         self.scene.update()
 
     def eventFilter(self, source, event):
+        if not (self.is_drawing or self.is_semi_auto):
+            return super().eventFilter(source, event)
+            
         if event.type() == event.MouseButtonPress:
-            if self.is_drawing and event.button() == Qt.LeftButton:
-                scene_pos = self.view.mapToScene(event.pos())
-                x, y = int(scene_pos.x()), int(scene_pos.y())
-                self.current_line.append((x, y))
-                self.add_manual_line(x, y)
-            elif self.is_semi_auto and event.button() == Qt.LeftButton:
-                scene_pos = self.view.mapToScene(event.pos())
-                x, y = int(scene_pos.x()), int(scene_pos.y())
-                if not self.semi_auto_start_point:
-                    self.semi_auto_start_point = (x, y)
-                    QMessageBox.information(self, "Semi-Auto Drawing",
+            scene_pos = self.view.mapToScene(event.pos())
+            x, y = int(scene_pos.x()), int(scene_pos.y())
+            
+            # Manual Drawing Mode
+            if self.is_drawing:
+                if event.button() == Qt.LeftButton:
+                    # First click starts a new line, subsequent clicks add nodes
+                    if not self.current_line:
+                        self.current_line = [(x, y)]
+                        self.add_manual_line(x, y)
+                    else:
+                        # Add new point to existing line
+                        self.current_line.append((x, y))
+                        self.add_manual_line(x, y)
+                        
+                elif event.button() == Qt.RightButton:
+                    # Right click finishes the current line
+                    if self.current_line:
+                        # Reset for next line
+                        self.current_line = []
+                        self.current_line_item = None
+                        
+            # Semi-Auto Drawing Mode
+            elif self.is_semi_auto:
+                if event.button() == Qt.LeftButton:
+                    if not self.semi_auto_start_point:
+                        self.semi_auto_start_point = (x, y)
+                        QMessageBox.information(self, "Semi-Auto Drawing",
                                             "Start point set. Click again to set end point.")
-                else:
-                    end_point = (x, y)
-                    self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
-                    self.semi_auto_start_point = None
+                    else:
+                        end_point = (x, y)
+                        self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
+                        self.semi_auto_start_point = None
+                
             return True  # Event handled
         return super().eventFilter(source, event)
 
     def add_manual_line(self, x, y):
+        """Improved manual line drawing with correct coordinates"""
+        x, y = int(x), int(y)  # Ensure integer coordinates
+        
         if len(self.current_line) == 1:
-            # Create a new line
+            # Create new line
             self.current_line_item = LineItem()
-            self.current_line_item.setZValue(1)  # Ensure lines are above the background
+            self.current_line_item.setZValue(1)
             self.scene.addItem(self.current_line_item)
             self.lines.append(self.current_line_item)
 
-            # Create a node
-            node = NodeItem(x, y, radius=5)  # Increased radius for better visibility
-            node.setZValue(2)  # Ensure nodes are above lines
-            self.scene.addItem(node)
-            self.current_line_item.add_node(node)
-
-            # Record action for undo
-            self.undo_stack.append(('add_line', self.current_line_item))
-            self.redo_stack.clear()
-        else:
-            # Add a node and update the line
+            # Add first node at exact clicked position
             node = NodeItem(x, y, radius=5)
             node.setZValue(2)
             self.scene.addItem(node)
             self.current_line_item.add_node(node)
-
-            # Record action for undo
+            
+            # Record for undo
+            self.undo_stack.append(('add_line', self.current_line_item))
+            self.redo_stack.clear()
+        else:
+            # Add node at exact clicked position
+            node = NodeItem(x, y, radius=5)
+            node.setZValue(2)
+            self.scene.addItem(node)
+            self.current_line_item.add_node(node)
+            
+            # Record for undo
             self.undo_stack.append(('add_node', node))
             self.redo_stack.clear()
 
     def semi_automatic_tracking(self, start_point, end_point):
-        # Use A* algorithm to find a path from start_point to end_point on the edge_map
-        path = self.a_star(self.edge_map, start_point, end_point)
+        """Improved semi-automatic line tracking along edges"""
+        # Create cost map from edge_map - inverse the values so edges have lower cost
+        cost_map = np.where(self.edge_map > 0, 1, 255)  # Edges = low cost (1), non-edges = high cost (255)
+        
+        # Swap x,y coordinates since the image coordinates are (y,x)
+        start = (int(start_point[1]), int(start_point[0]))
+        goal = (int(end_point[1]), int(end_point[0]))
+        
+        # Find path using modified A* that prefers edge pixels
+        path = self.a_star(cost_map, start, goal)
 
         if path:
-            # Convert path to list of (x, y) tuples
-            tracked_line = [(point[1], point[0]) for point in path]  # Swap to (x, y)
-            self.add_line(tracked_line)
-            # Fit view to include the new line
-            self.view.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio)
+            # Convert path back to (x,y) coordinates
+            tracked_line = [(int(point[1]), int(point[0])) for point in path]
+            
+            # Create new line item
+            line = LineItem()
+            line.setZValue(1)
+            self.scene.addItem(line)
+            self.lines.append(line)
+
+            # Add nodes along the tracked path
+            for x, y in tracked_line:
+                node = NodeItem(x, y, radius=3)
+                node.setZValue(2)
+                self.scene.addItem(node)
+                line.add_node(node)
+
+            # Record for undo
+            self.undo_stack.append(('add_line', line))
+            self.redo_stack.clear()
         else:
             QMessageBox.warning(self, "Path Not Found",
-                                "Could not find a path between the selected points. "
-                                "Try selecting closer points or adjusting the filter settings.")
+                            "Could not find a valid path between points.")
+
 
     def a_star(self, cost_map, start, goal):
+        """Modified A* pathfinding that prefers edge pixels"""
         def heuristic(a, b):
             return np.hypot(b[0] - a[0], b[1] - a[1])
 
-        neighbors = [(-1, -1), (-1, 0), (-1, 1),
-                     (0, -1),         (0, 1),
-                     (1, -1),  (1, 0),  (1, 1)]
+        def get_neighbors(point):
+            y, x = point
+            # Check 8-connected neighbors
+            for dy, dx in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < cost_map.shape[0] and 0 <= nx < cost_map.shape[1]:
+                    yield (ny, nx)
 
-        close_set = set()
-        came_from = {}
-        gscore = {start: 0}
-        fscore = {start: heuristic(start, goal)}
-        oheap = []
-        heapq.heappush(oheap, (fscore[start], start))
+        frontier = []
+        heapq.heappush(frontier, (0, start))
+        came_from = {start: None}
+        cost_so_far = {start: 0}
 
-        while oheap:
-            current = heapq.heappop(oheap)[1]
-
+        while frontier:
+            current = heapq.heappop(frontier)[1]
+            
             if current == goal:
-                path = []
-                while current in came_from:
-                    path.append(current)
-                    current = came_from[current]
-                path.append(start)
-                path.reverse()
-                return path
+                break
 
-            close_set.add(current)
+            for next_pos in get_neighbors(current):
+                # Add edge preference to movement cost
+                edge_cost = cost_map[next_pos]
+                new_cost = cost_so_far[current] + edge_cost
+                
+                if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
+                    cost_so_far[next_pos] = new_cost
+                    priority = new_cost + heuristic(goal, next_pos)
+                    heapq.heappush(frontier, (priority, next_pos))
+                    came_from[next_pos] = current
 
-            for i, j in neighbors:
-                neighbor = current[0] + i, current[1] + j
-                if (0 <= neighbor[0] < cost_map.shape[0] and 0 <= neighbor[1] < cost_map.shape[1]):
-                    tentative_g_score = gscore[current] + cost_map[neighbor]
-                    if neighbor in close_set and tentative_g_score >= gscore.get(neighbor, float('inf')):
-                        continue
-                    if tentative_g_score < gscore.get(neighbor, float('inf')):
-                        came_from[neighbor] = current
-                        gscore[neighbor] = tentative_g_score
-                        fscore[neighbor] = tentative_g_score + heuristic(neighbor, goal)
-                        heapq.heappush(oheap, (fscore[neighbor], neighbor))
+        # Reconstruct path
+        if goal not in came_from:
+            return None
+            
+        path = []
+        current = goal
+        while current is not None:
+            path.append(current)
+            current = came_from[current]
+        path.reverse()
+        return path
 
-        return None
 
     def edit_nearest_point(self, x, y):
         min_distance = float('inf')
@@ -2050,142 +2300,237 @@ class ShearletFilterTab(FilterTab):
 
     def open_manual_interpretation(self):
         pass
+class RidgeEnsembleGenerator:
+    """Class for generating ridge ensembles using DoG filter"""
+    def __init__(self):
+        self.params = {
+            'sigma1_range': (1.0, 5.0, 0.5),  # (min, max, step) for smaller sigma
+            'sigma2_range': (5.0, 15.0, 1.0),  # (min, max, step) for larger sigma
+            'threshold_range': (0.1, 0.9, 0.1)  # (min, max, step) for thresholding
+        }
+
+    def generate_ensemble(self, image):
+        ensemble = np.zeros_like(image, dtype=float)
+        count = 0
+        
+        # Iterate through all parameter combinations
+        for sigma1 in np.arange(*self.params['sigma1_range']):
+            for sigma2 in np.arange(*self.params['sigma2_range']):
+                for thresh in np.arange(*self.params['threshold_range']):
+                    # Apply DoG filter
+                    g1 = cv2.GaussianBlur(image, (0,0), sigma1)
+                    g2 = cv2.GaussianBlur(image, (0,0), sigma2)
+                    dog = cv2.subtract(g1, g2)
+                    
+                    # Detect ridges
+                    ridge_response = self.compute_ridge_measure(dog)
+                    
+                    # Threshold ridge response
+                    binary_response = (ridge_response > thresh * np.max(ridge_response)).astype(float)
+                    
+                    # Add to ensemble
+                    ensemble += binary_response
+                    count += 1
+                    
+        # Normalize ensemble
+        return (ensemble / count * 255).astype(np.uint8)
+
+    def compute_ridge_measure(self, image):
+        """Compute ridge measure using Hessian matrix analysis"""
+        try:
+            # Convert image to float64
+            img = image.astype(np.float64)
+            
+            # Compute Hessian matrix elements using correct Sobel parameters
+            # First derivatives
+            Ix = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=3)
+            Iy = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
+            
+            # Second derivatives
+            Ixx = cv2.Sobel(Ix, cv2.CV_64F, 1, 0, ksize=3)
+            Iyy = cv2.Sobel(Iy, cv2.CV_64F, 0, 1, ksize=3)
+            Ixy = cv2.Sobel(Ix, cv2.CV_64F, 0, 1, ksize=3)
+            
+            # Compute eigenvalues
+            # For ridges: |λ2| >> |λ1| ≈ 0
+            delta = np.sqrt((Ixx - Iyy)**2 + 4*Ixy**2)
+            lambda1 = (Ixx + Iyy + delta) / 2
+            lambda2 = (Ixx + Iyy - delta) / 2
+            
+            # Ridge measure (Frangi's vesselness measure)
+            ridge_measure = np.zeros_like(img)
+            
+            # Parameters for ridge measure
+            beta = 0.5
+            c = 0.5 * np.max(np.abs(lambda2))
+            
+            # Ridge criteria and measure
+            mask = np.abs(lambda2) > np.abs(lambda1)
+            if c > 0:  # Prevent division by zero
+                ridge_measure[mask] = np.exp(-np.abs(lambda1[mask])/(beta*np.abs(lambda2[mask]))) * \
+                                    (1 - np.exp(-lambda2[mask]**2/(2*c**2)))
+            
+            # Normalize output
+            ridge_measure = cv2.normalize(ridge_measure, None, 0, 1, cv2.NORM_MINMAX)
+            
+            return ridge_measure
+            
+        except Exception as e:
+            print(f"Error in compute_ridge_measure: {str(e)}")
+            return np.zeros_like(image, dtype=np.float64)
 
 class DoGFilterTab(FilterTab):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Difference of Gaussian Filter")
-        # self.create_filter_controls()
+        self.setWindowTitle("Ridge Detection (DoG)")
+        self.ensemble_generator = RidgeEnsembleGenerator()
+        #self.create_filter_controls()
 
     def create_filter_controls(self):
-        # Controls for two Gaussian kernels
-        kernel1_layout = QHBoxLayout()
-        kernel1_label = QLabel("Sigma 1 (Small):")
+        # Ridge detection parameters
+        ridge_group = QGroupBox("Ridge Detection Parameters")
+        ridge_layout = QVBoxLayout()
+        
+        # Sigma controls for DoG filter
+        sigma1_layout = QHBoxLayout()
+        sigma1_label = QLabel("Sigma 1:")
         self.sigma1_slider = QSlider(Qt.Horizontal)
         self.sigma1_slider.setRange(10, 50)  # 1.0 to 5.0
         self.sigma1_slider.setValue(20)  # Default 2.0
         self.sigma1_value = QLabel("2.0")
         self.sigma1_slider.valueChanged.connect(self.update_filter)
-        kernel1_layout.addWidget(kernel1_label)
-        kernel1_layout.addWidget(self.sigma1_slider)
-        kernel1_layout.addWidget(self.sigma1_value)
-        self.controls_layout.addLayout(kernel1_layout)
+        sigma1_layout.addWidget(sigma1_label)
+        sigma1_layout.addWidget(self.sigma1_slider)
+        sigma1_layout.addWidget(self.sigma1_value)
+        ridge_layout.addLayout(sigma1_layout)
 
-        kernel2_layout = QHBoxLayout()
-        kernel2_label = QLabel("Sigma 2 (Large):")
+        sigma2_layout = QHBoxLayout()
+        sigma2_label = QLabel("Sigma 2:")
         self.sigma2_slider = QSlider(Qt.Horizontal)
         self.sigma2_slider.setRange(50, 150)  # 5.0 to 15.0
         self.sigma2_slider.setValue(100)  # Default 10.0
         self.sigma2_value = QLabel("10.0")
         self.sigma2_slider.valueChanged.connect(self.update_filter)
-        kernel2_layout.addWidget(kernel2_label)
-        kernel2_layout.addWidget(self.sigma2_slider)
-        kernel2_layout.addWidget(self.sigma2_value)
-        self.controls_layout.addLayout(kernel2_layout)
+        sigma2_layout.addWidget(sigma2_label)
+        sigma2_layout.addWidget(self.sigma2_slider)
+        sigma2_layout.addWidget(self.sigma2_value)
+        ridge_layout.addLayout(sigma2_layout)
 
         # Kernel size control
-        ksize_layout = QHBoxLayout()
-        ksize_label = QLabel("Kernel Size:")
-        self.ksize_slider = QSlider(Qt.Horizontal)
-        self.ksize_slider.setRange(5, 31)  # Must be odd
-        self.ksize_slider.setValue(15)  # Default from paper
-        self.ksize_value = QLabel("15")
-        self.ksize_slider.valueChanged.connect(self.update_filter)
-        ksize_layout.addWidget(ksize_label)
-        ksize_layout.addWidget(self.ksize_slider)
-        ksize_layout.addWidget(self.ksize_value)
-        self.controls_layout.addLayout(ksize_layout)
+        kernel_layout = QHBoxLayout()
+        kernel_label = QLabel("Kernel Size:")
+        self.kernel_slider = QSlider(Qt.Horizontal)
+        self.kernel_slider.setRange(7, 31)  # Must be odd
+        self.kernel_slider.setValue(15)  # Default from paper
+        self.kernel_value = QLabel("15")
+        self.kernel_slider.valueChanged.connect(self.update_kernel_size)
+        kernel_layout.addWidget(kernel_label)
+        kernel_layout.addWidget(self.kernel_slider)
+        kernel_layout.addWidget(self.kernel_value)
+        ridge_layout.addLayout(kernel_layout)
 
-        # Feature type selection
-        feature_layout = QHBoxLayout()
-        self.feature_type = QComboBox()
-        self.feature_type.addItems(['Ridges (Light)', 'Valleys (Dark)', 'Both'])
-        self.feature_type.currentIndexChanged.connect(self.update_filter)
-        feature_layout.addWidget(QLabel("Detect:"))
-        feature_layout.addWidget(self.feature_type)
-        self.controls_layout.addLayout(feature_layout)
-    
+        # Ridge enhancement controls  
+        self.enhance_checkbox = QCheckBox("Enable Ridge Enhancement")
+        self.enhance_checkbox.setChecked(True)
+        self.enhance_checkbox.stateChanged.connect(self.update_filter)
+        ridge_layout.addWidget(self.enhance_checkbox)
+
+        # Add merge parallel lines option
+        self.merge_checkbox = QCheckBox("Merge Parallel Lines")
+        self.merge_checkbox.setChecked(True)
+        self.merge_checkbox.stateChanged.connect(self.update_filter)
+        ridge_layout.addWidget(self.merge_checkbox)
+
+        # Ensemble generation button
+        self.ensemble_button = QPushButton("Generate Ridge Ensemble")
+        self.ensemble_button.clicked.connect(self.generate_ridge_ensemble)
+        ridge_layout.addWidget(self.ensemble_button)
+
+        ridge_group.setLayout(ridge_layout)
+        self.controls_layout.addWidget(ridge_group)
+
+
+    def update_kernel_size(self, value):
+        # Ensure kernel size is odd
+        if value % 2 == 0:
+            value += 1
+            self.kernel_slider.setValue(value)
+        self.kernel_value.setText(str(value))
+        self.update_filter()
+
     def apply_filter(self, image):
         if image is None:
             return
 
-        # Get parameter values
-        sigma1 = self.sigma1_slider.value() / 10.0  # Smaller sigma
-        sigma2 = self.sigma2_slider.value() / 10.0  # Larger sigma
-        ksize = self.ksize_slider.value()
-        if ksize % 2 == 0:
-            ksize += 1  # Ensure odd kernel size
+        # Get parameters
+        sigma1 = self.sigma1_slider.value() / 10.0
+        sigma2 = self.sigma2_slider.value() / 10.0
+        kernel_size = self.kernel_slider.value()
 
-        # Update labels
-        self.sigma1_value.setText(f"{sigma1:.1f}")
-        self.sigma2_value.setText(f"{sigma2:.1f}")
-        self.ksize_value.setText(str(ksize))
+        # Apply DoG filter
+        g1 = cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma1)
+        g2 = cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma2)
+        dog = cv2.subtract(g1, g2)  # Invert subtraction order to make ridges bright
 
-        # Apply Gaussian blurs
-        g1 = cv2.GaussianBlur(image, (ksize, ksize), sigma1)
-        g2 = cv2.GaussianBlur(image, (ksize, ksize), sigma2)
+        if self.enhance_checkbox.isChecked():
+            # Enhance ridges
+            ridge_measure = self.ensemble_generator.compute_ridge_measure(dog)
+            
+            # Normalize and invert ridge measure to make ridges white
+            ridge_measure = ridge_measure - 1.0
+            ridge_measure = cv2.normalize(ridge_measure, None, 0, 1, cv2.NORM_MINMAX)
+            
+            if self.merge_checkbox.isChecked():
+                # Preserve wide ridges
+                kernel_size = max(3, int(sigma2))
+                if kernel_size % 2 == 0:
+                    kernel_size += 1
+                merge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+                
+                # First dilate to merge close ridges
+                ridge_measure = cv2.dilate(ridge_measure, merge_kernel)
+                
+                # Then close to fill gaps
+                ridge_measure = cv2.morphologyEx(ridge_measure, cv2.MORPH_CLOSE, merge_kernel)
+                
+                # Finally erode to restore ridge width while keeping connectivity
+                ridge_measure = cv2.erode(ridge_measure, merge_kernel)
+            
+            # Apply contrast enhancement to make ridges more prominent
+            ridge_measure = cv2.normalize(ridge_measure, None, 0, 1, cv2.NORM_MINMAX)
+            #ridge_measure = np.power(ridge_measure, 0.5)  # Gamma correction to enhance weak ridges
+            
+            # Convert to uint8 with proper scaling
+            self.filtered_image = (ridge_measure * 255).astype(np.uint8)
+            
+            # Ensure binary output with ridges as white
+            _, self.filtered_image = cv2.threshold(
+                self.filtered_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
+        else:
+            # For non-enhanced mode, normalize and invert DoG output
+            dog = -dog  # Invert to make ridges bright
+            self.filtered_image = cv2.normalize(dog, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            _, self.filtered_image = cv2.threshold(
+                self.filtered_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
 
-        # Compute DoG
-        dog = cv2.subtract(g1, g2)
-
-        # Enhance ridges using the detect_ridges method
-        ridge_measure = self.detect_ridges(dog)
-
-        # Normalize and convert to uint8
-        ridge_measure = cv2.normalize(ridge_measure, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-
-        # Threshold to create binary image
-        _, binary = cv2.threshold(ridge_measure, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        # Save the binary image as filtered_image
-        self.filtered_image = binary
         self.show_filtered_image()
 
-    def detect_ridges(self, image):
-        # Compute gradients
-        gx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
-        gy = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
-
-        # Compute gradient magnitude and orientation
-        mag = np.sqrt(gx**2 + gy**2)
-        angle = np.arctan2(gy, gx)
-
-        # Non-maximum suppression
-        nms = np.zeros_like(mag)
-        angle = angle * 180 / np.pi
-        angle[angle < 0] += 180
-
-        for i in range(1, mag.shape[0]-1):
-            for j in range(1, mag.shape[1]-1):
-                try:
-                    q = 255
-                    r = 255
-
-                    # Angle 0
-                    if (0 <= angle[i,j] < 22.5) or (157.5 <= angle[i,j] <= 180):
-                        q = mag[i, j+1]
-                        r = mag[i, j-1]
-                    # Angle 45
-                    elif 22.5 <= angle[i,j] < 67.5:
-                        q = mag[i+1, j-1]
-                        r = mag[i-1, j+1]
-                    # Angle 90
-                    elif 67.5 <= angle[i,j] < 112.5:
-                        q = mag[i+1, j]
-                        r = mag[i-1, j]
-                    # Angle 135
-                    elif 112.5 <= angle[i,j] < 157.5:
-                        q = mag[i-1, j-1]
-                        r = mag[i+1, j+1]
-
-                    if mag[i,j] >= q and mag[i,j] >= r:
-                        nms[i,j] = mag[i,j]
-                    else:
-                        nms[i,j] = 0
-                except IndexError as e:
-                    pass
-
-        return nms
+    def generate_ridge_ensemble(self):
+        if self.input_image is None:
+            return
+            
+        # Use fixed parameters from paper for ensemble generation
+        self.ensemble_generator.params = {
+            'sigma1_range': (1.5, 2.5, 0.5),  # Around paper's sigma1=2
+            'sigma2_range': (8.0, 12.0, 2.0),  # Around paper's sigma2=10
+            'threshold_range': (0.1, 0.9, 0.2)  # Reduced steps for faster processing
+        }
+        
+        ensemble = self.ensemble_generator.generate_ensemble(self.input_image)
+        self.filtered_image = ensemble
+        self.show_filtered_image()
     
 class EdgeLinkWindow(QDialog):
     edge_link_updated = pyqtSignal(np.ndarray)
