@@ -133,6 +133,7 @@ Refine and customize detected edges with comprehensive manual and semi-automatic
 
 Enhance and visualize connected edges for better analysis and interpretation:
 
+![Alt Text](/images/image_3.png)
 - **Edge Linking Parameters:**
   - **Minimum Edge Length:** Filter out short, insignificant edges.
   - **Maximum Gap:** Control the allowable gap between connected edges.
