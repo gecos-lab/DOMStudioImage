@@ -154,7 +154,7 @@ Efficiently process multiple images with consistent settings:
 ### Exporting Results
 
 Export processed data in various formats suitable for GIS applications and further analysis:
-
+![Alt Text](/images/image_4.png)
 - **Shapefile Export:**
   - **GeoDataFrame Creation:** Convert detected lineaments into Shapefiles compatible with GIS software.
   - **CRS Support:** Preserve Coordinate Reference System (CRS) information when available.
