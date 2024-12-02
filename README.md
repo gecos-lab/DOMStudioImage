@@ -50,6 +50,7 @@ DOMStudioImage is a robust and user-friendly application designed for the detect
 
 DOMStudioImage is packed with a multitude of features tailored for comprehensive geological image analysis:
 
+![Alt Text](/images/image.png)
 ### Load and Display Geological Images
 
 - **Supported Formats:** PNG, JPEG, BMP, GeoTIFF (`.tif`, `.tiff`).
