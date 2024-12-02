@@ -109,6 +109,7 @@ Enhance and detect geological lineaments using a variety of edge detection algor
 
 Refine and customize detected edges with comprehensive manual and semi-automatic tools:
 
+![Alt Text](/images/image_2.png)
 #### Manual Drawing
 
 - **Freehand Drawing:** Manually add or adjust lineaments directly on the image.
