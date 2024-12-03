@@ -298,9 +298,10 @@ class NodeItem(QGraphicsEllipseItem):
 class LineItem(QGraphicsPathItem):
     def __init__(self):
         super().__init__()
-        self.nodes = []
-        self.path_points = []
-        self.control_points = []
+        self.nodes = []  # All nodes
+        self.path_points = []  # All path points
+        self.control_points = []  # User-added control nodes
+        self.bezier_points = []  # Bezier curve control points
         
         pen = QPen(QColor('green'))
         pen.setWidth(2)
@@ -311,6 +312,7 @@ class LineItem(QGraphicsPathItem):
         self.setFlags(QGraphicsItem.ItemIsSelectable)
         self.setAcceptHoverEvents(True)
         self.setZValue(1)
+
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
@@ -357,31 +359,31 @@ class LineItem(QGraphicsPathItem):
                     insert_idx = i + 1
                     proj_point = curr_proj
 
-        # Add synchronized control point
+        # Add control node
         node = NodeItem(proj_point.x(), proj_point.y())
         node.setZValue(2)
         node.setVisible(True)  # Make new control points visible
         self.scene().addItem(node)
         
-        # Insert into both nodes and path points to maintain sync
+        # Insert into nodes and control nodes
         self.nodes.insert(insert_idx, node)
+        self.control_points.append(node)  # Add to control nodes list
         self.path_points.insert(insert_idx, (proj_point.x(), proj_point.y()))
         node.lines.append(self)
         
         # Update the curve
-        self.updateControlPoints()
         self.updatePath()
 
-        # Record action for undo if parent window exists
+        # Record action for undo
         if self.scene() and self.scene().views():
             parent_window = self.scene().views()[0].parent()
             if hasattr(parent_window, 'undo_stack'):
-                parent_window.undo_stack.append(('add_node', node))
+                parent_window.undo_stack.append(('add_control_node', node))
                 parent_window.redo_stack.clear()
 
     def updateControlPoints(self):
         """Update Bezier control points when nodes change"""
-        self.control_points = []
+        self.bezier_points = []
         
         if len(self.nodes) < 2:
             return
@@ -397,7 +399,7 @@ class LineItem(QGraphicsPathItem):
             ctrl1 = QPointF(p1.x() + dx/3, p1.y() + dy/3)
             ctrl2 = QPointF(p1.x() + dx*2/3, p1.y() + dy*2/3)
             
-            self.control_points.append((ctrl1, ctrl2))
+            self.bezier_points.append((ctrl1, ctrl2))
 
     def updatePath(self):
         """Update path using Bezier curves between control points"""
@@ -412,7 +414,7 @@ class LineItem(QGraphicsPathItem):
         for i in range(len(self.nodes) - 1):
             p1 = self.nodes[i].pos()
             p2 = self.nodes[i+1].pos()
-            ctrl1, ctrl2 = self.control_points[i]
+            ctrl1, ctrl2 = self.bezier_points[i]
             
             path.cubicTo(ctrl1, ctrl2, p2)
 
@@ -1370,15 +1372,12 @@ class ManualInterpretationWindow(QDialog):
 
         return segments
     def add_line(self, points, is_ridge=False):
-        """Add a line with vector graphics-style control points"""
+        """Add a line with initial points but no visible control points"""
         if is_ridge:
             reduced_points = self.remove_duplicates(points)
         else:
-            # Simplify line keeping key control points
             simplified_points = self.simplify_line(points, tolerance=0.5)
-            # Merge very close points
             cleaned_points = self.merge_close_points(simplified_points, threshold=2)
-            # Get strategic control points for smooth curves
             reduced_points = self.get_control_points(cleaned_points)
 
         # Create the line
@@ -1386,18 +1385,17 @@ class ManualInterpretationWindow(QDialog):
         line.setZValue(1)
         self.scene.addItem(line)
         
-        # Add initial control points
+        # Add initial points (not as control points)
         for x, y in reduced_points:
             node = NodeItem(x, y)
             node.setZValue(2)
             node.setVisible(False)  # Initially hidden
             self.scene.addItem(node)
-            line.nodes.append(node)
+            line.nodes.append(node)  # Add to all nodes
             node.lines.append(line)
             line.path_points.append((x, y))
         
-        # Initialize control points and update path
-        line.updateControlPoints()
+        # Update path
         line.updatePath()
         self.lines.append(line)
 
@@ -1556,16 +1554,16 @@ class ManualInterpretationWindow(QDialog):
 
     # **Existing Method: Toggle Nodes Visibility**
     def toggle_nodes_visibility(self, checked):
-        # If checked, show nodes; else, hide them
+        """Toggle visibility only for manually added control points"""
         if checked:
-            self.toggle_nodes_button.setText("Hide Nodes")
+            self.toggle_nodes_button.setText("Hide Control Points")
         else:
-            self.toggle_nodes_button.setText("Show Nodes")
+            self.toggle_nodes_button.setText("Show Control Points")
 
         for line in self.lines:
-            for node in line.nodes:
+            # Only toggle visibility for manually added control points
+            for node in line.control_points:
                 node.setVisible(checked)
-
     def image_to_lines(self, binary_image):
         """
         Converts a binary image into a list of lines using contour detection.
