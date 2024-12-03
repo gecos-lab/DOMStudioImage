@@ -419,6 +419,19 @@ class LineItem(QGraphicsPathItem):
             path.cubicTo(ctrl1, ctrl2, p2)
 
         self.setPath(path)
+
+    def updateSimplePath(self):
+        """Update path using straight lines between points"""
+        if len(self.path_points) < 2:
+            return
+            
+        path = QPainterPath()
+        path.moveTo(*self.path_points[0])
+        
+        for point in self.path_points[1:]:
+            path.lineTo(*point)
+        
+        self.setPath(path)
 class Network(torch.nn.Module): # Neural Network for Hessian Edge Detection
     def __init__(self):
         super().__init__()
@@ -1001,7 +1014,9 @@ class ManualInterpretationWindow(QDialog):
         # Initialize Undo/Redo stacks
         self.undo_stack = deque()
         self.redo_stack = deque()
-
+        # Add line width control
+        self.line_width = 2  # Default width
+        self.line_buffer = 0  # Default buffer
         # Initialize UI
         self.initUI()
 
@@ -1078,13 +1093,58 @@ class ManualInterpretationWindow(QDialog):
         undo_redo_layout.addWidget(self.redo_button)
         layout.addLayout(undo_redo_layout)
 
+        # Create line width control layout
+        line_control_layout = QHBoxLayout()
+        
+        # Width slider
+        width_label = QLabel("Line Width:")
+        self.width_slider = QSlider(Qt.Horizontal)
+        self.width_slider.setMinimum(1)
+        self.width_slider.setMaximum(10)
+        self.width_slider.setValue(self.line_width)
+        self.width_slider.valueChanged.connect(self.update_line_width)
+        
+        # Buffer slider
+        buffer_label = QLabel("Line Buffer:")
+        self.buffer_slider = QSlider(Qt.Horizontal)
+        self.buffer_slider.setMinimum(0)
+        self.buffer_slider.setMaximum(10)
+        self.buffer_slider.setValue(self.line_buffer)
+        self.buffer_slider.valueChanged.connect(self.update_line_buffer)
+        
+        # Add widgets to layout
+        line_control_layout.addWidget(width_label)
+        line_control_layout.addWidget(self.width_slider)
+        line_control_layout.addWidget(buffer_label)
+        line_control_layout.addWidget(self.buffer_slider)
+        # Add to main layout
+        layout.addLayout(line_control_layout)
         layout.addLayout(button_layout)
 
         self.setLayout(layout)
 
         # Connect mouse events
         self.view.viewport().installEventFilter(self)
+    # Add these new methods
+    def update_line_width(self, value):
+        """Update the width of all lines"""
+        self.line_width = value
+        self.update_all_lines()
 
+    def update_line_buffer(self, value):
+        """Update the buffer of all lines"""
+        self.line_buffer = value
+        self.update_all_lines()
+
+    def update_all_lines(self):
+        """Update the appearance of all lines with current width and buffer settings"""
+        for line in self.lines:
+            # Update pen with new width
+            pen = QPen(line.pen())
+            pen.setWidth(self.line_width + (self.line_buffer * 2))
+            line.setPen(pen)
+            line.updatePath()
+        self.scene.update()
     def show_original_image(self):
         # Convert the original image to QImage
         height, width = self.display_image.shape
@@ -1380,9 +1440,11 @@ class ManualInterpretationWindow(QDialog):
             cleaned_points = self.merge_close_points(simplified_points, threshold=2)
             reduced_points = self.get_control_points(cleaned_points)
 
-        # Create the line
+         # Create the line with current width settings
         line = LineItem()
         line.setZValue(1)
+        pen = QPen(QColor('green'), self.line_width + (self.line_buffer * 2))
+        line.setPen(pen)
         self.scene.addItem(line)
         
         # Add initial points (not as control points)
@@ -1550,7 +1612,7 @@ class ManualInterpretationWindow(QDialog):
     def toggle_edgelink(self, checked):
         self.use_edgelink = not checked  # Toggle the state
         self.toggle_edgelink_button.setText("Enable Edgelink" if not self.use_edgelink else "Disable Edgelink")
-        self.process_and_display_lines()
+        self.display_filtered_lines()
 
     # **Existing Method: Toggle Nodes Visibility**
     def toggle_nodes_visibility(self, checked):
@@ -1741,38 +1803,48 @@ class ManualInterpretationWindow(QDialog):
         return super().eventFilter(source, event)
 
     def add_manual_line(self, x, y):
-        """Improved manual line drawing with correct coordinates"""
+        """Improved manual line drawing with continuous path"""
         x, y = int(x), int(y)  # Ensure integer coordinates
         
         if len(self.current_line) == 1:
-            # Create new line
+            # Create new line on first click
             self.current_line_item = LineItem()
             self.current_line_item.setZValue(1)
+            pen = QPen(QColor('green'), self.line_width + (self.line_buffer * 2))
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            self.current_line_item.setPen(pen)
             self.scene.addItem(self.current_line_item)
+            
+            # Store first point
+            self.current_line_item.path_points = [(x, y)]
+            
+            # Add to lines list immediately
             self.lines.append(self.current_line_item)
-
-            # Add first node at exact clicked position
-            node = NodeItem(x, y, radius=5)
-            node.setZValue(2)
-            self.scene.addItem(node)
-            self.current_line_item.add_node(node)
+            
+            # Update path
+            self.current_line_item.updateSimplePath()
             
             # Record for undo
             self.undo_stack.append(('add_line', self.current_line_item))
             self.redo_stack.clear()
+            
         else:
-            # Add node at exact clicked position
-            node = NodeItem(x, y, radius=5)
-            node.setZValue(2)
-            self.scene.addItem(node)
-            self.current_line_item.add_node(node)
+            # Add new point
+            self.current_line_item.path_points.append((x, y))
+            
+            # Update path
+            self.current_line_item.updateSimplePath()
             
             # Record for undo
-            self.undo_stack.append(('add_node', node))
+            self.undo_stack.append(('update_line', (self.current_line_item, [(x, y)])))
             self.redo_stack.clear()
 
+        # Ensure the line is selectable and can show context menu
+        self.current_line_item.setFlag(QGraphicsItem.ItemIsSelectable)
+        self.current_line_item.setAcceptHoverEvents(True)
     def semi_automatic_tracking(self, start_point, end_point):
-        """Improved semi-automatic line tracking along edges"""
+        """Semi-automatic line tracking along edges using A* pathfinding"""
         # Create cost map from edge_map - inverse the values so edges have lower cost
         cost_map = np.where(self.edge_map > 0, 1, 255)  # Edges = low cost (1), non-edges = high cost (255)
         
@@ -1784,29 +1856,38 @@ class ManualInterpretationWindow(QDialog):
         path = self.a_star(cost_map, start, goal)
 
         if path:
-            # Convert path back to (x,y) coordinates
-            tracked_line = [(int(point[1]), int(point[0])) for point in path]
+            # Convert path back to (x,y) coordinates and create line
+            tracked_points = [(int(point[1]), int(point[0])) for point in path]
             
-            # Create new line item
+            # Create new line item with current width settings
             line = LineItem()
             line.setZValue(1)
+            pen = QPen(QColor('green'), self.line_width + (self.line_buffer * 2))
+            line.setPen(pen)
             self.scene.addItem(line)
+            
+            # Create path for the line
+            path = QPainterPath()
+            first_point = tracked_points[0]
+            path.moveTo(first_point[0], first_point[1])
+            
+            # Add all points to the path
+            for point in tracked_points[1:]:
+                path.lineTo(point[0], point[1])
+            
+            # Set the path to the line
+            line.setPath(path)
+            
+            # Store path points for future reference
+            line.path_points = tracked_points
+            
+            # Add to lines list and record for undo
             self.lines.append(line)
-
-            # Add nodes along the tracked path
-            for x, y in tracked_line:
-                node = NodeItem(x, y, radius=3)
-                node.setZValue(2)
-                self.scene.addItem(node)
-                line.add_node(node)
-
-            # Record for undo
             self.undo_stack.append(('add_line', line))
             self.redo_stack.clear()
         else:
             QMessageBox.warning(self, "Path Not Found",
                             "Could not find a valid path between points.")
-
 
     def a_star(self, cost_map, start, goal):
         """Modified A* pathfinding that prefers edge pixels"""
