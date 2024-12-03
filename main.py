@@ -49,12 +49,18 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QImage, QPixmap, QPainterPath, QPen, QColor
 from PyQt5.QtCore import Qt, QPointF, QRectF
-
+# import QLineF
+from PyQt5.QtCore import QLineF
 from PyQt5.QtGui import QTransform
 from collections import deque
 import torch
 from PyQt5.QtCore import (Qt, pyqtSignal)
 from PyQt5.QtWidgets import QSpinBox
+from PyQt5.QtCore import QEvent
+from PyQt5.QtCore import QEvent, Qt, QPointF
+from PyQt5.QtGui import QPen, QColor, QPainterPath
+from PyQt5.QtWidgets import QGraphicsPathItem, QMenu, QAction
+
  # Define a NodeItem representing control pointsA
 # Define a NodeItem representing control points
 from skimage import exposure
@@ -274,7 +280,7 @@ class NodeItem(QGraphicsEllipseItem):
         if change == QGraphicsItem.ItemPositionHasChanged:
             # Notify all connected lines to update their paths
             for line in self.lines:
-                line.update_path()
+                line.updatePath()
         return super().itemChange(change, value)
 
     def contextMenuEvent(self, event):
@@ -293,71 +299,124 @@ class LineItem(QGraphicsPathItem):
     def __init__(self):
         super().__init__()
         self.nodes = []
-        # Set up pen
+        self.path_points = []
+        self.control_points = []
+        
         pen = QPen(QColor('green'))
         pen.setWidth(2)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         self.setPen(pen)
         
-        # Set flags to enable interaction
-        self.setFlags(
-            QGraphicsItem.ItemIsSelectable |
-            QGraphicsItem.ItemIsFocusable
-        )
+        self.setFlags(QGraphicsItem.ItemIsSelectable)
         self.setAcceptHoverEvents(True)
-        self.setAcceptedMouseButtons(Qt.AllButtons)
         self.setZValue(1)
 
-    def add_node(self, node):
-        self.nodes.append(node)
-        node.lines.append(self)
-        node.setParentItem(self)
-        self.update_path()
-
-    def remove_node(self, node):
-        if node in self.nodes:
-            self.nodes.remove(node)
-            node.lines.remove(self)
-            node.setParentItem(None)
-            self.update_path()
-
-    def update_path(self):
-        path = QPainterPath()
-        if self.nodes:
-            path.moveTo(self.nodes[0].pos())
-            for node in self.nodes[1:]:
-                path.lineTo(node.pos())
-        self.setPath(path)
-
     def mousePressEvent(self, event):
-        # Handle selection first
-        if event.button() == Qt.LeftButton:
-            self.setSelected(True)
-        elif event.button() == Qt.RightButton:
-            # Show context menu
-            self.showContextMenu(event)
-        super().mousePressEvent(event)
-
-    def showContextMenu(self, event):
-        menu = QMenu()
-        delete_action = menu.addAction("Delete Line")
-        
-        # Find the parent window (ManualInterpretationWindow)
-        scene = self.scene()
-        if scene:
-            view = scene.views()[0]  # Get the first view
-            parent_window = view.parent()
+        if event.button() == Qt.RightButton:
+            menu = QMenu()
+            add_control_point = menu.addAction("Add Control Point")
+            delete_line = menu.addAction("Delete Line")
             
-            if parent_window and hasattr(parent_window, 'delete_line'):
-                action = menu.exec_(event.screenPos())
-                if action == delete_action:
-                    parent_window.delete_line(self)
+            action = menu.exec_(event.screenPos())
+            if action == add_control_point:
+                self.addNodeAtPosition(event.scenePos())
+            elif action == delete_line:
+                if self.scene() and self.scene().views():
+                    parent_window = self.scene().views()[0].parent()
+                    if hasattr(parent_window, 'delete_line'):
+                        parent_window.delete_line(self)
+        else:
+            super().mousePressEvent(event)
+    def addNodeAtPosition(self, pos):
+        """Add a control point that affects the curve shape"""
+        if len(self.path_points) < 2:
+            return
 
-    def contextMenuEvent(self, event):
-        # Intercept context menu event
-        self.showContextMenu(event)
-        event.accept()
+        # Find closest segment
+        min_dist = float('inf')
+        insert_idx = 0
+        proj_point = QPointF()
+
+        for i in range(len(self.path_points) - 1):
+            p1 = QPointF(self.path_points[i][0], self.path_points[i][1])
+            p2 = QPointF(self.path_points[i+1][0], self.path_points[i+1][1])
+            
+            # Project point onto line segment
+            line_vec = p2 - p1
+            point_vec = pos - p1
+            line_len = (line_vec.x() * line_vec.x() + line_vec.y() * line_vec.y())
+            
+            if line_len > 0:
+                t = max(0, min(1, (point_vec.x() * line_vec.x() + point_vec.y() * line_vec.y()) / line_len))
+                curr_proj = QPointF(p1.x() + t * line_vec.x(), p1.y() + t * line_vec.y())
+                curr_dist = (pos - curr_proj).manhattanLength()
+                
+                if curr_dist < min_dist:
+                    min_dist = curr_dist
+                    insert_idx = i + 1
+                    proj_point = curr_proj
+
+        # Add synchronized control point
+        node = NodeItem(proj_point.x(), proj_point.y())
+        node.setZValue(2)
+        node.setVisible(True)  # Make new control points visible
+        self.scene().addItem(node)
+        
+        # Insert into both nodes and path points to maintain sync
+        self.nodes.insert(insert_idx, node)
+        self.path_points.insert(insert_idx, (proj_point.x(), proj_point.y()))
+        node.lines.append(self)
+        
+        # Update the curve
+        self.updateControlPoints()
+        self.updatePath()
+
+        # Record action for undo if parent window exists
+        if self.scene() and self.scene().views():
+            parent_window = self.scene().views()[0].parent()
+            if hasattr(parent_window, 'undo_stack'):
+                parent_window.undo_stack.append(('add_node', node))
+                parent_window.redo_stack.clear()
+
+    def updateControlPoints(self):
+        """Update Bezier control points when nodes change"""
+        self.control_points = []
+        
+        if len(self.nodes) < 2:
+            return
+            
+        for i in range(len(self.nodes) - 1):
+            p1 = self.nodes[i].pos()
+            p2 = self.nodes[i+1].pos()
+            
+            # Calculate control points at 1/3 and 2/3 distance
+            dx = p2.x() - p1.x()
+            dy = p2.y() - p1.y()
+            
+            ctrl1 = QPointF(p1.x() + dx/3, p1.y() + dy/3)
+            ctrl2 = QPointF(p1.x() + dx*2/3, p1.y() + dy*2/3)
+            
+            self.control_points.append((ctrl1, ctrl2))
+
+    def updatePath(self):
+        """Update path using Bezier curves between control points"""
+        if len(self.nodes) < 2:
+            return
+            
+        self.updateControlPoints()
+        
+        path = QPainterPath()
+        path.moveTo(self.nodes[0].pos())
+
+        for i in range(len(self.nodes) - 1):
+            p1 = self.nodes[i].pos()
+            p2 = self.nodes[i+1].pos()
+            ctrl1, ctrl2 = self.control_points[i]
+            
+            path.cubicTo(ctrl1, ctrl2, p2)
+
+        self.setPath(path)
 class Network(torch.nn.Module): # Neural Network for Hessian Edge Detection
     def __init__(self):
         super().__init__()
@@ -1311,37 +1370,97 @@ class ManualInterpretationWindow(QDialog):
 
         return segments
     def add_line(self, points, is_ridge=False):
-        """
-        Add a line to the scene with optional simplification.
-
-        Parameters:
-            points (List[Tuple[int, int]]): List of (x, y) points defining the line.
-            is_ridge (bool): Flag indicating if the line is a ridge. If True, skip simplification.
-        """
+        """Add a line with vector graphics-style control points"""
         if is_ridge:
-            # Skip simplification to preserve ridge shape
             reduced_points = self.remove_duplicates(points)
         else:
-            # Apply simplification steps for edge lines
+            # Simplify line keeping key control points
             simplified_points = self.simplify_line(points, tolerance=0.5)
-            merging_points = self.merge_close_points(simplified_points, threshold=2)
-            reduced_points = self.reduce_points(merging_points)
+            # Merge very close points
+            cleaned_points = self.merge_close_points(simplified_points, threshold=2)
+            # Get strategic control points for smooth curves
+            reduced_points = self.get_control_points(cleaned_points)
 
+        # Create the line
         line = LineItem()
         line.setZValue(1)
         self.scene.addItem(line)
-        self.lines.append(line)
-
-        # Create nodes only for the reduced points
+        
+        # Add initial control points
         for x, y in reduced_points:
-            node = NodeItem(int(x), int(y), radius=3)
-            node.setZValue(2)  # Ensure nodes are above lines
+            node = NodeItem(x, y)
+            node.setZValue(2)
+            node.setVisible(False)  # Initially hidden
             self.scene.addItem(node)
-            line.add_node(node)
+            line.nodes.append(node)
+            node.lines.append(line)
+            line.path_points.append((x, y))
+        
+        # Initialize control points and update path
+        line.updateControlPoints()
+        line.updatePath()
+        self.lines.append(line)
 
         # Record action for undo
         self.undo_stack.append(('add_line', line))
         self.redo_stack.clear()
+
+    def get_control_points(self, points, min_angle=30, min_dist=10):
+        """
+        Get strategic control points that define the line's shape:
+        - Start and end points
+        - Points of significant direction change
+        - Points at regular intervals for long straight segments
+        """
+        if len(points) < 3:
+            return points
+            
+        control_points = [points[0]]  # Always include start point
+        current_angle = 0
+        last_control = 0
+        
+        for i in range(1, len(points) - 1):
+            # Calculate angle change
+            v1 = np.array(points[i]) - np.array(points[i-1])
+            v2 = np.array(points[i+1]) - np.array(points[i])
+            
+            if np.any(v1) and np.any(v2):
+                # Calculate angle between vectors
+                dot = np.dot(v1, v2)
+                norm = np.linalg.norm(v1) * np.linalg.norm(v2)
+                if norm != 0:
+                    cos_angle = dot / norm
+                    cos_angle = min(1.0, max(-1.0, cos_angle))
+                    angle = np.degrees(np.arccos(cos_angle))
+                    
+                    # Add point if:
+                    # 1. Significant angle change
+                    # 2. Long distance from last control point
+                    dist_from_last = np.linalg.norm(np.array(points[i]) - np.array(points[last_control]))
+                    
+                    if angle > min_angle or dist_from_last > min_dist:
+                        control_points.append(points[i])
+                        last_control = i
+                        current_angle = 0
+                    else:
+                        current_angle += angle
+
+        control_points.append(points[-1])  # Always include end point
+        
+        # Add intermediate points for long segments
+        final_points = []
+        for i in range(len(control_points) - 1):
+            final_points.append(control_points[i])
+            # If segment is too long, add intermediate control point
+            dist = np.linalg.norm(np.array(control_points[i+1]) - np.array(control_points[i]))
+            if dist > min_dist * 3:
+                # Add midpoint
+                mid = (np.array(control_points[i]) + np.array(control_points[i+1])) / 2
+                final_points.append(tuple(mid.astype(int)))
+                
+        final_points.append(control_points[-1])
+        
+        return final_points
 
     def merge_close_points(self, points, threshold=2):
         """Merge points that are very close to each other."""
@@ -3142,7 +3261,6 @@ class ShearWaveletWindow(QDialog):
         ax.axis('off')
 
         self.setLayout(layout)
-
 
 
 class FourierTransformDialog(QDialog):
