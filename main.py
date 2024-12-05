@@ -70,11 +70,19 @@ from utility import edgelink, seglist  # Add seglist to import
 class PreprocessingWindow(QDialog):
     def __init__(self, image, parent=None):
         super().__init__(parent)
-        self.original_image = image.copy()  # Keep original
-        self.current_image = image.copy()   # Working copy
+        self.original_image = image.copy()
+        self.current_image = image.copy()
         self.mask = np.ones(image.shape[:2], dtype=np.uint8) * 255
         self.drawing = False
         self.points = []
+        
+        # Add state tracking
+        self.effects_state = {
+            'ahe': False,
+            'background': False,
+            'contrast': False
+        }
+        
         self.initUI()
 
     def initUI(self):
@@ -107,7 +115,18 @@ class PreprocessingWindow(QDialog):
         self.ahe_button = QPushButton("Apply AHE")
         self.ahe_button.setCheckable(True)
         self.ahe_button.clicked.connect(self.toggle_ahe)
+
+        self.background_button = QPushButton("Remove Background")
+        self.background_button.setCheckable(True)
+        self.background_button.clicked.connect(self.toggle_background)
+
+        self.contrast_button = QPushButton("Enhance Contrast")
+        self.contrast_button.setCheckable(True)
+        self.contrast_button.clicked.connect(self.toggle_contrast)
+
         enhance_layout.addWidget(self.ahe_button)
+        enhance_layout.addWidget(self.background_button)
+        enhance_layout.addWidget(self.contrast_button)
         layout.addLayout(enhance_layout)
 
         # Add zoom controls
@@ -159,22 +178,37 @@ class PreprocessingWindow(QDialog):
             self.image_item.setPixmap(pixmap)
         else:
             self.image_item = self.scene.addPixmap(pixmap)
+    def apply_active_effects(self):
+        # Start from original image
+        self.current_image = self.original_image.copy()
+        
+        # Apply effects in specific order
+        if self.effects_state['background']:
+            selem = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+            background = cv2.morphologyEx(self.current_image, cv2.MORPH_OPEN, selem)
+            self.current_image = cv2.subtract(self.current_image, background)
+        
+        if self.effects_state['contrast']:
+            p2, p98 = np.percentile(self.current_image, (2, 98))
+            self.current_image = img_as_ubyte(exposure.rescale_intensity(
+                self.current_image, in_range=(p2, p98)))
+        
+        if self.effects_state['ahe']:
+            img_float = img_as_float(self.current_image)
+            img_eq = exposure.equalize_adapthist(img_float)
+            self.current_image = img_as_ubyte(img_eq)
+        
+        self.update_display()
+
     def toggle_ahe(self, checked):
         try:
-            if checked:
-                # Convert to float and apply AHE
-                img_float = img_as_float(self.original_image)
-                img_eq = exposure.equalize_adapthist(img_float)
-                self.current_image = img_as_ubyte(img_eq)
-                self.ahe_button.setText("Remove AHE")
-            else:
-                self.current_image = self.original_image.copy()
-                self.ahe_button.setText("Apply AHE")
-            
-            self.update_display()
+            self.effects_state['ahe'] = checked
+            self.apply_active_effects()
+            self.ahe_button.setText("Remove AHE" if checked else "Apply AHE")
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to apply AHE: {str(e)}")
             self.ahe_button.setChecked(False)
+            self.effects_state['ahe'] = False
     def fit_to_view(self):
         self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
         self.view.centerOn(self.scene.sceneRect().center())
@@ -263,6 +297,25 @@ class PreprocessingWindow(QDialog):
 
     def get_masked_image(self):
         return cv2.bitwise_and(self.current_image, self.current_image, mask=self.mask)
+    def toggle_background(self, checked):
+        try:
+            self.effects_state['background'] = checked
+            self.apply_active_effects()
+            self.background_button.setText("Restore Background" if checked else "Remove Background")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to remove background: {str(e)}")
+            self.background_button.setChecked(False)
+            self.effects_state['background'] = False
+
+    def toggle_contrast(self, checked):
+        try:
+            self.effects_state['contrast'] = checked
+            self.apply_active_effects()
+            self.contrast_button.setText("Reset Contrast" if checked else "Enhance Contrast")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to enhance contrast: {str(e)}")
+            self.contrast_button.setChecked(False)
+            self.effects_state['contrast'] = False
 class NodeItem(QGraphicsEllipseItem):
     def __init__(self, x, y, radius=3, parent=None):
         super().__init__(-radius, -radius, 2 * radius, 2 * radius, parent)
