@@ -151,7 +151,7 @@ class RidgeSystem(ShearletSystem):
                                 octaves)
 
         self.n_shearlets = len(self.scales) * self.n_oris * 2
-        self.shearlets = np.zeros((self.rows, self.cols, self.n_shearlets), dtype=np.complex_)
+        self.shearlets = np.zeros((self.rows, self.cols, self.n_shearlets), dtype=np.complex128)
 
         self.positive_widths = np.zeros(self.n_shearlets)
         self.expected_coeffs = np.zeros((self.rows, len(self.scales)))
@@ -260,11 +260,11 @@ class RidgeSystem(ShearletSystem):
 
         offset = int(offset * self.scales_per_octave)
 
-        ridgeness = np.zeros_like(x, dtype=np.float)
-        widths = np.zeros_like(x, dtype=np.float)
-        heights = np.zeros_like(x, dtype=np.float)
+        ridgeness = np.zeros_like(x, dtype=float)
+        widths = np.zeros_like(x, dtype=float)
+        heights = np.zeros_like(x, dtype=float)
 
-        orientations = np.zeros_like(x, dtype=np.float)
+        orientations = np.zeros_like(x, dtype=float)
 
         ci = np.abs(np.imag(transformed[:, :, :, :(-offset)]))
         cr = np.real(transformed[:, :, :, offset:])

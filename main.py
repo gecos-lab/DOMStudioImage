@@ -1083,6 +1083,9 @@ class ManualInterpretationWindow(QDialog):
         self.toggle_lines_button.clicked.connect(self.toggle_lines_visibility)
         button_layout.addWidget(self.toggle_lines_button)
 
+        self.export_button = QPushButton("Export to Shapefile")
+        self.export_button.clicked.connect(self.export_to_shapefile)
+        layout.addWidget(self.export_button)
         # **Optional Enhancement: Undo and Redo Buttons**
         undo_redo_layout = QHBoxLayout()
         self.undo_button = QPushButton("Undo")
@@ -1120,7 +1123,27 @@ class ManualInterpretationWindow(QDialog):
         # Add to main layout
         layout.addLayout(line_control_layout)
         layout.addLayout(button_layout)
-
+        # Add morphological controls layout
+        morpho_layout = QHBoxLayout()
+        
+        # Merge parallel lines checkbox and slider
+        self.merge_lines_checkbox = QCheckBox("Merge Parallel Lines")
+        self.merge_lines_checkbox.stateChanged.connect(self.update_line_merging)
+        
+        merge_label = QLabel("Merge Distance:")
+        self.merge_distance_slider = QSlider(Qt.Horizontal)
+        self.merge_distance_slider.setMinimum(1)
+        self.merge_distance_slider.setMaximum(50)
+        self.merge_distance_slider.setValue(3)
+        self.merge_distance_slider.setEnabled(False)  # Initially disabled
+        self.merge_distance_slider.valueChanged.connect(self.update_line_merging)
+        
+        morpho_layout.addWidget(self.merge_lines_checkbox)
+        morpho_layout.addWidget(merge_label)
+        morpho_layout.addWidget(self.merge_distance_slider)
+        
+        # Add to main layout before button_layout
+        layout.addLayout(morpho_layout)
         self.setLayout(layout)
 
         # Connect mouse events
@@ -1135,7 +1158,127 @@ class ManualInterpretationWindow(QDialog):
         """Update the buffer of all lines"""
         self.line_buffer = value
         self.update_all_lines()
+    def export_to_shapefile(self):
+        """Export the drawn lines to a shapefile with CRS and optionally create a geotiff copy"""
+        try:
+            # Create list of LineString geometries with y-coordinate flipped
+            geometries = []
+            for line in self.lines:
+                if len(line.path_points) >= 2:
+                    # Flip the y coordinates to match GeoTIFF orientation
+                    height = self.parent().img.shape[0]
+                    coords = [(float(x), float(height - y)) for x, y in line.path_points]
+                    if len(coords) >= 2:
+                        geometries.append(LineString(coords))
 
+            if not geometries:
+                QMessageBox.warning(self, "Export Error", "No valid lines to export!")
+                return
+
+            # Create GeoDataFrame
+            gdf = gpd.GeoDataFrame(geometry=geometries)
+            
+            # Get parent window and image dimensions
+            parent_window = self.parent()
+            height, width = parent_window.img.shape[:2]
+
+            if hasattr(parent_window, 'geotiff_crs') and parent_window.geotiff_crs:
+                # Use original GeoTIFF CRS and transform
+                gdf.set_crs(parent_window.geotiff_crs, inplace=True)
+                used_crs = parent_window.geotiff_crs
+                
+                if hasattr(parent_window, 'geotiff_transform'):
+                    def pixel_to_coords(geom):
+                        if geom.is_empty:
+                            return geom
+                        coords = []
+                        for x, y in geom.coords:
+                            world_x, world_y = rasterio.transform.xy(
+                                parent_window.geotiff_transform, y, x)
+                            coords.append((world_x, world_y))
+                        return LineString(coords)
+                    
+                    gdf['geometry'] = gdf['geometry'].apply(pixel_to_coords)
+            else:
+                # Create transform that preserves pixel coordinates
+                transform = rasterio.transform.Affine(
+                    1, 0, 0,    # x scaling, x shearing, x translation
+                    0, -1, height    # y shearing, y scaling (negative), y translation
+                )
+                
+                # Use simple projected CRS
+                crs = rasterio.crs.CRS.from_string("+proj=eqc +lat_ts=0 +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs")
+                used_crs = crs
+                
+                # Set CRS for shapefile
+                gdf.set_crs(crs, inplace=True)
+                
+                # Create a georeferenced copy of the original image
+                if parent_window and hasattr(parent_window, 'img'):
+                    try:
+                        geotiff_path, _ = QFileDialog.getSaveFileName(
+                            self,
+                            "Save Georeferenced Image Copy",
+                            "",
+                            "GeoTIFF (*.tif)"
+                        )
+                        
+                        if geotiff_path:
+                            # Create GeoTIFF with same coordinate system
+                            with rasterio.open(
+                                geotiff_path,
+                                'w',
+                                driver='GTiff',
+                                height=height,
+                                width=width,
+                                count=1,
+                                dtype=parent_window.img.dtype,
+                                crs=crs,
+                                transform=transform,
+                                nodata=0
+                            ) as dst:
+                                dst.write(parent_window.img, 1)
+                                
+                            QMessageBox.information(
+                                self,
+                                "Image Copy Created",
+                                f"A georeferenced copy of the image has been saved to:\n{geotiff_path}"
+                            )
+                            
+                    except Exception as e:
+                        QMessageBox.warning(
+                            self,
+                            "Warning",
+                            f"Failed to create georeferenced image copy: {str(e)}"
+                        )
+
+                # Save shapefile
+                file_name, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "Save Shapefile",
+                    "",
+                    "Shapefile (*.shp)"
+                )
+
+                if file_name:
+                    if not file_name.lower().endswith('.shp'):
+                        file_name += '.shp'
+
+                    gdf.to_file(file_name)
+                    
+                    success_msg = f"Lines exported to {os.path.basename(file_name)}\nCRS: {used_crs}"
+                    QMessageBox.information(
+                        self,
+                        "Export Successful",
+                        success_msg
+                    )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"Error exporting shapefile: {str(e)}"
+            )
     def update_all_lines(self):
         """Update the appearance of all lines with current width and buffer settings"""
         for line in self.lines:
@@ -1145,6 +1288,198 @@ class ManualInterpretationWindow(QDialog):
             line.setPen(pen)
             line.updatePath()
         self.scene.update()
+
+    def update_line_merging(self):
+        """Update line merging based on checkbox and slider"""
+        if self.merge_lines_checkbox.isChecked():
+            self.merge_distance_slider.setEnabled(True)
+            self.merge_parallel_lines(self.merge_distance_slider.value())
+        else:
+            self.merge_distance_slider.setEnabled(False)
+            self.display_filtered_lines()  # Reset to original lines
+
+    def merge_parallel_lines(self, max_distance):
+        """Merge smaller parallel lines into main fracture lines"""
+        if not self.lines:
+            return
+                
+        # Convert lines to numpy arrays and calculate lengths
+        line_arrays = []
+        for line in self.lines:
+            points = np.array(line.path_points)
+            if len(points) >= 2:
+                # Calculate line length
+                length = np.sum(np.sqrt(np.sum(np.diff(points, axis=0)**2, axis=1)))
+                line_arrays.append((line, points, length))
+        
+        # Sort lines by length to identify main fracture lines
+        line_arrays.sort(key=lambda x: x[2], reverse=True)
+        
+        # Separate main lines and subsidiary lines
+        length_threshold = np.mean([x[2] for x in line_arrays])  # Use mean length as threshold
+        main_lines = [(line, points) for line, points, length in line_arrays if length >= length_threshold]
+        subsidiary_lines = [(line, points) for line, points, length in line_arrays if length < length_threshold]
+        
+        merged = []
+        merged_lines = set()
+        
+        # For each main line, find and merge nearby subsidiary lines
+        for main_line, main_points in main_lines:
+            if main_line in merged_lines:
+                continue
+                
+            parallel_group = [main_points]
+            merged_subsidiaries = []
+            
+            # Find subsidiary lines to merge
+            for sub_line, sub_points in subsidiary_lines:
+                if sub_line in merged_lines:
+                    continue
+                    
+                if self.are_lines_parallel(main_points, sub_points) and \
+                self.get_line_distance(main_points, sub_points) < max_distance:
+                    parallel_group.append(sub_points)
+                    merged_subsidiaries.append(sub_line)
+                    merged_lines.add(sub_line)
+            
+            if merged_subsidiaries:
+                # Merge lines while preserving main line position
+                merged_points = self.merge_preserving_main(main_points, parallel_group)
+                merged_line = self.create_merged_line(merged_points)
+                merged.append(merged_line)
+                
+                # Remove merged subsidiary lines
+                for line in merged_subsidiaries:
+                    if line in self.lines:
+                        self.delete_line(line)
+                
+                merged_lines.add(main_line)
+                if main_line in self.lines:
+                    self.delete_line(main_line)
+            else:
+                merged.append(main_line)
+        
+        # Add remaining unmerged subsidiary lines
+        for sub_line, _ in subsidiary_lines:
+            if sub_line not in merged_lines:
+                merged.append(sub_line)
+        
+        # Update lines list
+        self.lines = merged
+        self.show_overlay()
+    def merge_preserving_main(self, main_points, all_points):
+        """Merge lines while preserving main line position"""
+        # Calculate weights based on distance from main line
+        weights = []
+        for points in all_points:
+            dist = self.get_line_distance(main_points, points)
+            weight = 1.0 / (1.0 + dist)  # Higher weight for closer lines
+            weights.append(weight)
+        
+        # Normalize weights
+        weights = np.array(weights)
+        weights = weights / np.sum(weights)
+        
+        # Create float array for calculations
+        merged_points = np.zeros_like(main_points, dtype=np.float64)
+        
+        # Combine points with weighted averaging
+        for i, points in enumerate(all_points):
+            # Interpolate points to match main line length
+            if len(points) != len(main_points):
+                t = np.linspace(0, 1, len(points))
+                t_new = np.linspace(0, 1, len(main_points))
+                points = np.array([np.interp(t_new, t, points[:, 0]),
+                                np.interp(t_new, t, points[:, 1])]).T
+            merged_points += weights[i] * points.astype(np.float64)
+        
+        # Convert back to integers at the end
+        return np.round(merged_points).astype(np.int32)
+    def are_lines_parallel(self, points1, points2, angle_threshold=20):
+        """Check if two lines are roughly parallel with safety checks"""
+        # Get primary directions
+        dir1 = points1[-1] - points1[0]
+        dir2 = points2[-1] - points2[0]
+        
+        # Calculate vector lengths
+        norm1 = np.linalg.norm(dir1)
+        norm2 = np.linalg.norm(dir2)
+        
+        # Check for zero-length vectors
+        if norm1 < 1e-6 or norm2 < 1e-6:
+            return False
+        
+        # Safely normalize directions
+        dir1_normalized = dir1 / norm1
+        dir2_normalized = dir2 / norm2
+        
+        # Calculate angle between directions with numerical stability
+        dot_product = np.clip(np.dot(dir1_normalized, dir2_normalized), -1.0, 1.0)
+        angle = np.abs(np.arccos(dot_product))
+        angle_deg = np.degrees(angle)
+        
+        # Check if lines are parallel within threshold
+        return angle_deg < angle_threshold or angle_deg > (180 - angle_threshold)
+
+
+    def get_line_distance(self, points1, points2):
+        """Get minimum distance between two line segments with validation"""
+        if len(points1) < 2 or len(points2) < 2:
+            return float('inf')
+            
+        min_dist = float('inf')
+        
+        # Sample points along both lines
+        for p1 in points1:
+            for p2 in points2:
+                if np.any(np.isnan(p1)) or np.any(np.isnan(p2)):
+                    continue
+                dist = np.linalg.norm(p1 - p2)
+                if not np.isnan(dist):
+                    min_dist = min(min_dist, dist)
+        
+        return min_dist
+
+    def merge_point_sets(self, points1, points2):
+        """Merge two sets of points into a single line"""
+        # Combine points
+        combined = np.vstack((points1, points2))
+        
+        # Fit line to combined points
+        vx, vy, x0, y0 = cv2.fitLine(combined, cv2.DIST_L2, 0, 0.01, 0.01)
+        
+        # Project points onto fitted line
+        direction = np.array([vx[0], vy[0]])
+        point = np.array([x0[0], y0[0]])
+        
+        # Get extent of line
+        dots = np.dot(combined - point, direction)
+        min_t = np.min(dots)
+        max_t = np.max(dots)
+        
+        # Create new line points
+        num_points = max(len(points1), len(points2))
+        t = np.linspace(min_t, max_t, num_points)
+        merged_points = point + direction * t.reshape(-1, 1)
+        
+        return merged_points.astype(np.int32)
+
+    def create_merged_line(self, points):
+        """Create a new LineItem from merged points"""
+        line = LineItem()
+        line.setZValue(1)
+        pen = QPen(QColor('green'), self.line_width + (self.line_buffer * 2))
+        line.setPen(pen)
+        
+        # Add points
+        for x, y in points:
+            line.path_points.append((int(x), int(y)))
+        
+        # Update path
+        line.updateSimplePath()
+        self.scene.addItem(line)
+        
+        return line
     def show_original_image(self):
         # Convert the original image to QImage
         height, width = self.display_image.shape
@@ -4278,7 +4613,32 @@ class MyWindow(QMainWindow):
         img_path, _ = QFileDialog.getOpenFileName(self, "Open Image File", "",
                                                 "Image Files (*.png *.jpg *.bmp *.tif *.tiff)")
         if img_path:
-            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+            # Initialize geospatial attributes
+            self.geotiff_crs = None
+            self.geotiff_transform = None
+            
+            # Check if file is a GeoTIFF
+            if img_path.lower().endswith(('.tif', '.tiff')):
+                try:
+                    # Open with rasterio to get geospatial information
+                    with rasterio.open(img_path) as dataset:
+                        # Read image data
+                        img = dataset.read(1)  # Read first band
+                        
+                        # Store geospatial information
+                        self.geotiff_crs = dataset.crs
+                        self.geotiff_transform = dataset.transform
+                        
+                        print(f"Loaded GeoTIFF with CRS: {self.geotiff_crs}")
+                        
+                except Exception as e:
+                    print(f"Failed to read GeoTIFF: {str(e)}")
+                    # Fallback to regular image reading
+                    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+            else:
+                # Regular image reading for non-TIFF formats
+                img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+
             if img is not None:
                 # Normalize the image
                 img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
@@ -4288,18 +4648,18 @@ class MyWindow(QMainWindow):
                 if preprocess_dialog.exec_() == QDialog.Accepted:
                     # Get the masked image
                     self.img = preprocess_dialog.get_masked_image()
-                    self.img = cv2.resize(self.img, (1024, 1024)) 
+                    self.img = cv2.resize(self.img, (1024, 1024))
                     self.mask = np.zeros(self.img.shape[:2], np.uint8)
                     self.filtered_img = self.img.copy()
                     self.shearlet_system = EdgeSystem(*self.img.shape)
 
-                    # Update all filter tabs with the new image
-                    for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
+                    # Update all filter tabs
+                    for i in range(self.tab_widget.count() - 1):
                         tab = self.tab_widget.widget(i)
                         if isinstance(tab, FilterTab):
                             tab.set_input_image(self.img)
 
-                    # Enable buttons that require an image
+                    # Enable buttons
                     self.manual_interpretation_button.setEnabled(True)
                     self.clean_edges_button.setEnabled(True)
 
@@ -4310,6 +4670,7 @@ class MyWindow(QMainWindow):
                                     "Image preprocessing was cancelled.")
             else:
                 QMessageBox.warning(self, "Error", "Failed to load image.")
+
 
     def save_mask(self):
         if self.img is None:
