@@ -67,6 +67,7 @@ from skimage import exposure
 from skimage.util import img_as_float, img_as_ubyte
 import scipy 
 from utility import edgelink, seglist  # Add seglist to import
+
 class PreprocessingWindow(QDialog):
     def __init__(self, image, parent=None):
         super().__init__(parent)
@@ -76,11 +77,13 @@ class PreprocessingWindow(QDialog):
         self.drawing = False
         self.points = []
         
-        # Add state tracking
+        # Expand state tracking
         self.effects_state = {
             'ahe': False,
             'background': False,
-            'contrast': False
+            'contrast': False,
+            'clahe': False,
+            'bilateral': False
         }
         
         self.initUI()
@@ -129,6 +132,40 @@ class PreprocessingWindow(QDialog):
         enhance_layout.addWidget(self.contrast_button)
         layout.addLayout(enhance_layout)
 
+        # Add new enhancement controls
+        advanced_layout = QHBoxLayout()
+        
+        # CLAHE controls
+        clahe_group = QGroupBox("CLAHE")
+        clahe_layout = QVBoxLayout()
+        self.clahe_button = QPushButton("Apply CLAHE")
+        self.clahe_button.setCheckable(True)
+        self.clahe_button.clicked.connect(self.toggle_clahe)
+        self.clahe_size = QSlider(Qt.Horizontal)
+        self.clahe_size.setRange(2, 16)
+        self.clahe_size.setValue(8)
+        self.clahe_size.setEnabled(False)
+        clahe_layout.addWidget(self.clahe_button)
+        clahe_layout.addWidget(self.clahe_size)
+        clahe_group.setLayout(clahe_layout)
+        
+        # Bilateral controls
+        bilateral_group = QGroupBox("Bilateral Filter")
+        bilateral_layout = QVBoxLayout()
+        self.bilateral_button = QPushButton("Apply Bilateral")
+        self.bilateral_button.setCheckable(True)
+        self.bilateral_button.clicked.connect(self.toggle_bilateral)
+        self.bilateral_sigma = QSlider(Qt.Horizontal)
+        self.bilateral_sigma.setRange(10, 150)
+        self.bilateral_sigma.setValue(75)
+        self.bilateral_sigma.setEnabled(False)
+        bilateral_layout.addWidget(self.bilateral_button)
+        bilateral_layout.addWidget(self.bilateral_sigma)
+        bilateral_group.setLayout(bilateral_layout)
+        
+        advanced_layout.addWidget(clahe_group)
+        advanced_layout.addWidget(bilateral_group)
+        layout.addLayout(advanced_layout)
         # Add zoom controls
         zoom_layout = QHBoxLayout()
         self.zoom_in_btn = QPushButton("Zoom In")
@@ -178,6 +215,31 @@ class PreprocessingWindow(QDialog):
             self.image_item.setPixmap(pixmap)
         else:
             self.image_item = self.scene.addPixmap(pixmap)
+
+    def toggle_clahe(self, checked):
+        try:
+            self.effects_state['clahe'] = checked
+            self.clahe_size.setEnabled(checked)
+            self.apply_active_effects()
+            self.clahe_button.setText("Remove CLAHE" if checked else "Apply CLAHE")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to apply CLAHE: {str(e)}")
+            self.clahe_button.setChecked(False)
+            self.effects_state['clahe'] = False
+            self.clahe_size.setEnabled(False)
+
+    def toggle_bilateral(self, checked):
+        try:
+            self.effects_state['bilateral'] = checked
+            self.bilateral_sigma.setEnabled(checked)
+            self.apply_active_effects()
+            self.bilateral_button.setText("Remove Bilateral" if checked else "Apply Bilateral")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to apply bilateral: {str(e)}")
+            self.bilateral_button.setChecked(False)
+            self.effects_state['bilateral'] = False
+            self.bilateral_sigma.setEnabled(False)
+
     def apply_active_effects(self):
         # Start from original image
         self.current_image = self.original_image.copy()
@@ -197,9 +259,39 @@ class PreprocessingWindow(QDialog):
             img_float = img_as_float(self.current_image)
             img_eq = exposure.equalize_adapthist(img_float)
             self.current_image = img_as_ubyte(img_eq)
+
+        # 1. Edge-preserving smoothing first
+        if self.effects_state['bilateral']:
+            sigma = self.bilateral_sigma.value()
+            self.current_image = cv2.bilateralFilter(
+                self.current_image, d=9, 
+                sigmaColor=sigma, sigmaSpace=sigma
+            )
+        
+        # 2. Background removal
+        if self.effects_state['background']:
+            selem = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+            background = cv2.morphologyEx(self.current_image, cv2.MORPH_OPEN, selem)
+            self.current_image = cv2.subtract(self.current_image, background)
+        
+        # 3. Contrast enhancements
+        if self.effects_state['contrast']:
+            p2, p98 = np.percentile(self.current_image, (2, 98))
+            self.current_image = img_as_ubyte(exposure.rescale_intensity(
+                self.current_image, in_range=(p2, p98)))
+        
+        if self.effects_state['clahe']:
+            grid_size = self.clahe_size.value()
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(grid_size, grid_size))
+            self.current_image = clahe.apply(self.current_image)
+        
+        if self.effects_state['ahe']:
+            img_float = img_as_float(self.current_image)
+            img_eq = exposure.equalize_adapthist(img_float)
+            self.current_image = img_as_ubyte(img_eq)
         
         self.update_display()
-
+        
     def toggle_ahe(self, checked):
         try:
             self.effects_state['ahe'] = checked
@@ -3048,60 +3140,63 @@ class DoGFilterTab(FilterTab):
         if image is None:
             return
 
-        # Get parameters
-        sigma1 = self.sigma1_slider.value() / 10.0
-        sigma2 = self.sigma2_slider.value() / 10.0
-        kernel_size = self.kernel_slider.value()
+        # Larger sigma gap to emphasize big fractures over fine ridges
+        sigma1 = 2.0
+        sigma2 = 20.0
+        kernel_size = 25  # Larger kernel size to remove small details
 
-        # Apply DoG filter
+        # Apply two Gaussian blurs with different sigmas
         g1 = cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma1)
         g2 = cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma2)
-        dog = cv2.subtract(g1, g2)  # Invert subtraction order to make ridges bright
 
-        if self.enhance_checkbox.isChecked():
-            # Enhance ridges
-            ridge_measure = self.ensemble_generator.compute_ridge_measure(dog)
-            
-            # Normalize and invert ridge measure to make ridges white
-            ridge_measure = ridge_measure - 1.0
-            ridge_measure = cv2.normalize(ridge_measure, None, 0, 1, cv2.NORM_MINMAX)
-            
-            if self.merge_checkbox.isChecked():
-                # Preserve wide ridges
-                kernel_size = max(3, int(sigma2))
-                if kernel_size % 2 == 0:
-                    kernel_size += 1
-                merge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-                
-                # First dilate to merge close ridges
-                ridge_measure = cv2.dilate(ridge_measure, merge_kernel)
-                
-                # Then close to fill gaps
-                ridge_measure = cv2.morphologyEx(ridge_measure, cv2.MORPH_CLOSE, merge_kernel)
-                
-                # Finally erode to restore ridge width while keeping connectivity
-                ridge_measure = cv2.erode(ridge_measure, merge_kernel)
-            
-            # Apply contrast enhancement to make ridges more prominent
-            ridge_measure = cv2.normalize(ridge_measure, None, 0, 1, cv2.NORM_MINMAX)
-            #ridge_measure = np.power(ridge_measure, 0.5)  # Gamma correction to enhance weak ridges
-            
-            # Convert to uint8 with proper scaling
-            self.filtered_image = (ridge_measure * 255).astype(np.uint8)
-            
-            # Ensure binary output with ridges as white
-            _, self.filtered_image = cv2.threshold(
-                self.filtered_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-            )
-        else:
-            # For non-enhanced mode, normalize and invert DoG output
-            dog = -dog  # Invert to make ridges bright
-            self.filtered_image = cv2.normalize(dog, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-            _, self.filtered_image = cv2.threshold(
-                self.filtered_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-            )
+        # Difference of Gaussian
+        dog = g1 - g2  # Ridges (fractures) should appear bright
 
+        # Normalize to [0,255]
+        dog_norm = cv2.normalize(dog, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+        # Threshold to isolate potential fractures
+        # Otsu might still bring in noise, consider a manual threshold if needed.
+        # For now, let's try Otsu:
+        _, binary = cv2.threshold(dog_norm, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+
+        # Morphological filtering to remove thin lines:
+        # Use a small morphological opening to remove very thin ridges
+        morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, morph_kernel, iterations=1)
+
+        # Close small gaps in thicker fractures
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, morph_kernel, iterations=2)
+
+        # Remove small connected components that are not actual fractures
+        binary = self.remove_small_objects(binary, min_size=500)  # Adjust min_size as needed
+
+        # Optional: dilate to strengthen wide fractures, then erode to refine
+        # Increase as needed if fractures are still too thin
+        # binary = cv2.dilate(binary, morph_kernel, iterations=1)
+        # binary = cv2.erode(binary, morph_kernel, iterations=1)
+
+        self.filtered_image = binary
         self.show_filtered_image()
+
+    def remove_small_objects(self, binary_image, min_size=500):
+        """
+        Remove small connected components from binary_image.
+        Components smaller than min_size pixels are removed.
+        """
+        # Label connected components
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_image, 8, cv2.CV_32S)
+        
+        # Create an output mask
+        output_mask = np.zeros_like(binary_image)
+        
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area >= min_size:
+                output_mask[labels == i] = 255
+
+        return output_mask
+
 
     def generate_ridge_ensemble(self):
         if self.input_image is None:
