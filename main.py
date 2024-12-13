@@ -1089,7 +1089,7 @@ class FilterTab(QWidget):
             main_window = self.get_main_window()
             if main_window and hasattr(main_window, 'tab_widget'):
                 current_tab = main_window.tab_widget.currentWidget()
-                is_ridge_mode = isinstance(current_tab, DoGFilterTab)
+                is_ridge_mode = isinstance(current_tab, FrangiFilterTab)
             else:
                 is_ridge_mode = False
 
@@ -1654,7 +1654,7 @@ class ManualInterpretationWindow(QDialog):
 
         if hasattr(self.parent(), 'tab_widget'):
             current_tab = self.parent().tab_widget.currentWidget()
-            is_dog_filter = isinstance(current_tab, DoGFilterTab)
+            is_dog_filter = isinstance(current_tab, FrangiFilterTab)
         else:
             is_dog_filter = False
 
@@ -2946,38 +2946,139 @@ class SobelFilterTab(FilterTab):
 
     def open_manual_interpretation(self):
         pass
-
+from coshrem.shearletsystem import RidgeSystem
 class ShearletFilterTab(FilterTab):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.shearlet_system = None
+        self.shearlet_system = None  # Will hold RidgeSystem instance
+        self.setWindowTitle("Ridge (Shearlet-based)")
         self.setup_controls()
 
     def setup_controls(self):
-        # Min contrast slider
+        # Minimum contrast slider
         self.min_contrast = QSlider(Qt.Horizontal)
         self.min_contrast.setRange(0, 100)
-        self.min_contrast.setValue(10)
+        self.min_contrast.setValue(1)
         self.min_contrast.valueChanged.connect(self.update_filter)
-
         self.controls_layout.addWidget(QLabel("Min Contrast"))
         self.controls_layout.addWidget(self.min_contrast)
 
-        ##
+        # Threshold slider for ridgeness map
+        self.threshold_slider = QSlider(Qt.Horizontal)
+        self.threshold_slider.setRange(0, 255)
+        self.threshold_slider.setValue(10)  # Default threshold
+        self.threshold_slider.valueChanged.connect(self.update_filter)
+        self.controls_layout.addWidget(QLabel("Binary Threshold"))
+        self.controls_layout.addWidget(self.threshold_slider)
+
+        # Minimum fracture size slider
+        self.min_size_slider = QSlider(Qt.Horizontal)
+        self.min_size_slider.setRange(1, 2000)
+        self.min_size_slider.setValue(500)
+        self.min_size_slider.valueChanged.connect(self.update_filter)
+        self.controls_layout.addWidget(QLabel("Min Fracture Size (px)"))
+        self.controls_layout.addWidget(self.min_size_slider)
+
+        # Pruning checkbox and slider
+        self.prune_checkbox = QCheckBox("Apply Pruning")
+        self.prune_checkbox.stateChanged.connect(self.update_filter)
+        self.controls_layout.addWidget(self.prune_checkbox)
+
+        self.prune_slider = QSlider(Qt.Horizontal)
+        self.prune_slider.setRange(1, 100)  # Adjust range as needed # higher value means 
+        self.prune_slider.setValue(10)  # Default minimum branch length
+        self.prune_slider.valueChanged.connect(self.update_filter)
+        self.controls_layout.addWidget(QLabel("Prune Branch Length"))
+        self.controls_layout.addWidget(self.prune_slider)
 
     def set_input_image(self, image):
         super().set_input_image(image)
-        self.shearlet_system = EdgeSystem(*image.shape)
+        # Create a RidgeSystem with similar parameters as the original image size
+        rows, cols = image.shape
+        self.shearlet_system = RidgeSystem(rows, cols)  # Use defaults or modify as needed
 
     def apply_filter(self, image):
-        if self.shearlet_system is not None:
-            edges, _ = self.shearlet_system.detect(image, min_contrast=self.min_contrast.value())
-            self.filtered_image = (edges * 255).astype(np.uint8)
-        else:
+        if self.shearlet_system is None:
             self.filtered_image = image.copy()
+            return
+
+        # Get parameters
+        min_contrast_val = self.min_contrast.value()
+        binary_thresh = self.threshold_slider.value()
+        min_size = self.min_size_slider.value()
+        prune_length = self.prune_slider.value()
+        do_prune = self.prune_checkbox.isChecked()
+
+        # Detect ridges using RidgeSystem
+        ridgeness, orientations = self.shearlet_system.detect(
+            image,
+            min_contrast=min_contrast_val,
+            positive_only=False,
+            negative_only=False,
+            pivoting_scales='lowest'  # 'all', 'highest' can also be tried
+        )
+
+        # Normalize ridgeness to 0-255
+        ridgeness_norm = cv2.normalize(ridgeness, None, 0, 255, cv2.NORM_MINMAX)
+        ridgeness_uint8 = ridgeness_norm.astype(np.uint8)
+
+        # Apply binary threshold
+        _, binary = cv2.threshold(ridgeness_uint8, binary_thresh, 255, cv2.THRESH_BINARY)
+
+        # Remove small objects that are not significant fractures
+        binary = self.remove_small_objects(binary, min_size=min_size)
+
+        if do_prune:
+            # Skeletonize
+            skeleton = skeletonize(binary > 0).astype(np.uint8) * 255
+            # Prune skeleton
+            skeleton_pruned = self.prune_skeleton(skeleton, min_branch_length=prune_length)
+            self.filtered_image = skeleton_pruned
+        else:
+            # No pruning, just show the binary result
+            self.filtered_image = binary
+
+
+    def remove_small_objects(self, binary_image, min_size=500):
+        """
+        Remove small connected components from binary_image.
+        Components smaller than min_size pixels are removed.
+        """
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_image, 8, cv2.CV_32S)
+        output_mask = np.zeros_like(binary_image)
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area >= min_size:
+                output_mask[labels == i] = 255
+        return output_mask
+
+    def prune_skeleton(self, skeleton, min_branch_length=10):
+        """
+        Prune small skeleton components by removing any connected component 
+        smaller than 'min_branch_length' pixels.
+        """
+        # skeleton is assumed to be a binary image (0 or 255)
+        # Ensure binary format
+        _, sk_bin = cv2.threshold(skeleton, 127, 255, cv2.THRESH_BINARY)
+
+        # Label connected components
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(sk_bin, connectivity=8)
+
+        # Create output mask initialized to zeros
+        pruned = np.zeros_like(sk_bin, dtype=np.uint8)
+
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            # Keep only components that are at least min_branch_length pixels long
+            if area >= min_branch_length:
+                pruned[labels == i] = 255
+
+        return pruned
 
     def open_manual_interpretation(self):
         pass
+
+
 class RidgeEnsembleGenerator:
     """Class for generating ridge ensembles using DoG filter"""
     def __init__(self):
@@ -3057,69 +3158,97 @@ class RidgeEnsembleGenerator:
             print(f"Error in compute_ridge_measure: {str(e)}")
             return np.zeros_like(image, dtype=np.float64)
 
-class DoGFilterTab(FilterTab):
+class FrangiFilterTab(FilterTab):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Ridge Detection (DoG)")
+        self.setWindowTitle("Ridge Detection (Frangi)")
         self.ensemble_generator = RidgeEnsembleGenerator()
-        #self.create_filter_controls()
+        # self.create_filter_controls()
 
     def create_filter_controls(self):
-        # Ridge detection parameters
-        ridge_group = QGroupBox("Ridge Detection Parameters")
+        # Group box for Frangi parameters
+        ridge_group = QGroupBox("Frangi Filter Parameters")
         ridge_layout = QVBoxLayout()
-        
-        # Sigma controls for DoG filter
-        sigma1_layout = QHBoxLayout()
-        sigma1_label = QLabel("Sigma 1:")
-        self.sigma1_slider = QSlider(Qt.Horizontal)
-        self.sigma1_slider.setRange(10, 50)  # 1.0 to 5.0
-        self.sigma1_slider.setValue(20)  # Default 2.0
-        self.sigma1_value = QLabel("2.0")
-        self.sigma1_slider.valueChanged.connect(self.update_filter)
-        sigma1_layout.addWidget(sigma1_label)
-        sigma1_layout.addWidget(self.sigma1_slider)
-        sigma1_layout.addWidget(self.sigma1_value)
-        ridge_layout.addLayout(sigma1_layout)
 
-        sigma2_layout = QHBoxLayout()
-        sigma2_label = QLabel("Sigma 2:")
-        self.sigma2_slider = QSlider(Qt.Horizontal)
-        self.sigma2_slider.setRange(50, 150)  # 5.0 to 15.0
-        self.sigma2_slider.setValue(100)  # Default 10.0
-        self.sigma2_value = QLabel("10.0")
-        self.sigma2_slider.valueChanged.connect(self.update_filter)
-        sigma2_layout.addWidget(sigma2_label)
-        sigma2_layout.addWidget(self.sigma2_slider)
-        sigma2_layout.addWidget(self.sigma2_value)
-        ridge_layout.addLayout(sigma2_layout)
+        # Scale Range Min
+        scale_min_layout = QHBoxLayout()
+        scale_min_label = QLabel("Scale Min:")
+        self.scale_min_slider = QSlider(Qt.Horizontal)
+        self.scale_min_slider.setRange(1, 50)  # Adjust as needed
+        self.scale_min_slider.setValue(1)  # Default
+        self.scale_min_slider.valueChanged.connect(self.update_filter)
+        self.scale_min_value_label = QLabel("1")
+        scale_min_layout.addWidget(scale_min_label)
+        scale_min_layout.addWidget(self.scale_min_slider)
+        scale_min_layout.addWidget(self.scale_min_value_label)
+        ridge_layout.addLayout(scale_min_layout)
 
-        # Kernel size control
-        kernel_layout = QHBoxLayout()
-        kernel_label = QLabel("Kernel Size:")
-        self.kernel_slider = QSlider(Qt.Horizontal)
-        self.kernel_slider.setRange(7, 31)  # Must be odd
-        self.kernel_slider.setValue(15)  # Default from paper
-        self.kernel_value = QLabel("15")
-        self.kernel_slider.valueChanged.connect(self.update_kernel_size)
-        kernel_layout.addWidget(kernel_label)
-        kernel_layout.addWidget(self.kernel_slider)
-        kernel_layout.addWidget(self.kernel_value)
-        ridge_layout.addLayout(kernel_layout)
+        # Scale Range Max
+        scale_max_layout = QHBoxLayout()
+        scale_max_label = QLabel("Scale Max:")
+        self.scale_max_slider = QSlider(Qt.Horizontal)
+        self.scale_max_slider.setRange(2, 100)  # Adjust as needed
+        self.scale_max_slider.setValue(20)  # Default
+        self.scale_max_slider.valueChanged.connect(self.update_filter)
+        self.scale_max_value_label = QLabel("20")
+        scale_max_layout.addWidget(scale_max_label)
+        scale_max_layout.addWidget(self.scale_max_slider)
+        scale_max_layout.addWidget(self.scale_max_value_label)
+        ridge_layout.addLayout(scale_max_layout)
 
-        # Ridge enhancement controls  
-        self.enhance_checkbox = QCheckBox("Enable Ridge Enhancement")
-        self.enhance_checkbox.setChecked(True)
-        self.enhance_checkbox.stateChanged.connect(self.update_filter)
-        ridge_layout.addWidget(self.enhance_checkbox)
+        # Scale Step
+        scale_step_layout = QHBoxLayout()
+        scale_step_label = QLabel("Scale Step:")
+        self.scale_step_slider = QSlider(Qt.Horizontal)
+        self.scale_step_slider.setRange(1, 10)  # Adjust as needed
+        self.scale_step_slider.setValue(1)  # Default
+        self.scale_step_slider.valueChanged.connect(self.update_filter)
+        self.scale_step_value_label = QLabel("1")
+        scale_step_layout.addWidget(scale_step_label)
+        scale_step_layout.addWidget(self.scale_step_slider)
+        scale_step_layout.addWidget(self.scale_step_value_label)
+        ridge_layout.addLayout(scale_step_layout)
 
-        # Add merge parallel lines option
-        self.merge_checkbox = QCheckBox("Merge Parallel Lines")
-        self.merge_checkbox.setChecked(True)
-        self.merge_checkbox.stateChanged.connect(self.update_filter)
-        ridge_layout.addWidget(self.merge_checkbox)
+        # Alpha
+        alpha_layout = QHBoxLayout()
+        alpha_label = QLabel("Alpha:")
+        self.alpha_slider = QSlider(Qt.Horizontal)
+        self.alpha_slider.setRange(1, 50)  # Scale 0.1 to 5.0
+        self.alpha_slider.setValue(5)  # Corresponds to 0.5 if scaled by 10
+        self.alpha_slider.valueChanged.connect(self.update_filter)
+        self.alpha_value_label = QLabel("0.5")
+        alpha_layout.addWidget(alpha_label)
+        alpha_layout.addWidget(self.alpha_slider)
+        alpha_layout.addWidget(self.alpha_value_label)
+        ridge_layout.addLayout(alpha_layout)
 
-        # Ensemble generation button
+        # Beta
+        beta_layout = QHBoxLayout()
+        beta_label = QLabel("Beta:")
+        self.beta_slider = QSlider(Qt.Horizontal)
+        self.beta_slider.setRange(1, 50)  # Scale similarly as alpha
+        self.beta_slider.setValue(5)  # Default 0.5
+        self.beta_slider.valueChanged.connect(self.update_filter)
+        self.beta_value_label = QLabel("0.5")
+        beta_layout.addWidget(beta_label)
+        beta_layout.addWidget(self.beta_slider)
+        beta_layout.addWidget(self.beta_value_label)
+        ridge_layout.addLayout(beta_layout)
+
+        # Gamma
+        gamma_layout = QHBoxLayout()
+        gamma_label = QLabel("Gamma:")
+        self.gamma_slider = QSlider(Qt.Horizontal)
+        self.gamma_slider.setRange(1, 50)  # from 1 to 50
+        self.gamma_slider.setValue(15)  # Default
+        self.gamma_slider.valueChanged.connect(self.update_filter)
+        self.gamma_value_label = QLabel("15")
+        gamma_layout.addWidget(gamma_label)
+        gamma_layout.addWidget(self.gamma_slider)
+        gamma_layout.addWidget(self.gamma_value_label)
+        ridge_layout.addLayout(gamma_layout)
+
+        # Ensemble generation button (as before)
         self.ensemble_button = QPushButton("Generate Ridge Ensemble")
         self.ensemble_button.clicked.connect(self.generate_ridge_ensemble)
         ridge_layout.addWidget(self.ensemble_button)
@@ -3127,88 +3256,86 @@ class DoGFilterTab(FilterTab):
         ridge_group.setLayout(ridge_layout)
         self.controls_layout.addWidget(ridge_group)
 
-
-    def update_kernel_size(self, value):
-        # Ensure kernel size is odd
-        if value % 2 == 0:
-            value += 1
-            self.kernel_slider.setValue(value)
-        self.kernel_value.setText(str(value))
-        self.update_filter()
-
     def apply_filter(self, image):
         if image is None:
             return
 
-        # Larger sigma gap to emphasize big fractures over fine ridges
-        sigma1 = 2.0
-        sigma2 = 20.0
-        kernel_size = 25  # Larger kernel size to remove small details
+        from skimage.filters import frangi, frangi
+        
+        # Read parameters from sliders
+        scale_min = self.scale_min_slider.value()
+        scale_max = self.scale_max_slider.value()
+        # Ensure scale_min < scale_max
+        if scale_min >= scale_max:
+            scale_max = scale_min + 1
 
-        # Apply two Gaussian blurs with different sigmas
-        g1 = cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma1)
-        g2 = cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma2)
+        scale_step = self.scale_step_slider.value()
+        alpha = self.alpha_slider.value() / 10.0  # converting to float, e.g., slider=5 -> alpha=0.5
+        beta = self.beta_slider.value() / 10.0
+        gamma = float(self.gamma_slider.value())
 
-        # Difference of Gaussian
-        dog = g1 - g2  # Ridges (fractures) should appear bright
+        # Update labels
+        self.scale_min_value_label.setText(str(scale_min))
+        self.scale_max_value_label.setText(str(scale_max))
+        self.scale_step_value_label.setText(str(scale_step))
+        self.alpha_value_label.setText(f"{alpha:.1f}")
+        self.beta_value_label.setText(f"{beta:.1f}")
+        self.gamma_value_label.setText(str(int(gamma)))
 
-        # Normalize to [0,255]
-        dog_norm = cv2.normalize(dog, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        # Convert image to float for Frangi
+        img_float = img_as_float(image)
 
-        # Threshold to isolate potential fractures
-        # Otsu might still bring in noise, consider a manual threshold if needed.
-        # For now, let's try Otsu:
-        _, binary = cv2.threshold(dog_norm, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+        # Apply Frangi filter with user-selected parameters
+        frangi_response = frangi(
+            img_float, 
+            scale_range=(scale_min, scale_max),
+            scale_step=scale_step,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma
+        )
 
-        # Morphological filtering to remove thin lines:
-        # Use a small morphological opening to remove very thin ridges
+        # Rescale the Frangi output to 0-255 for easier thresholding
+        from skimage.exposure import rescale_intensity
+        frangi_norm = rescale_intensity(frangi_response, out_range=(0,255)).astype(np.uint8)
+
+        # Perform Otsu thresholding to separate ridges from background
+        ret, otsu_img = cv2.threshold(frangi_norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # If Otsu is too strict, lower the threshold slightly
+        threshold_value = max(ret - 10, 0)
+        _, binary = cv2.threshold(frangi_norm, threshold_value, 255, cv2.THRESH_BINARY)
+
+        # Mild morphological closing to connect nearby ridge segments
         morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, morph_kernel, iterations=1)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, morph_kernel, iterations=1)
 
-        # Close small gaps in thicker fractures
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, morph_kernel, iterations=2)
-
-        # Remove small connected components that are not actual fractures
-        binary = self.remove_small_objects(binary, min_size=500)  # Adjust min_size as needed
-
-        # Optional: dilate to strengthen wide fractures, then erode to refine
-        # Increase as needed if fractures are still too thin
-        # binary = cv2.dilate(binary, morph_kernel, iterations=1)
-        # binary = cv2.erode(binary, morph_kernel, iterations=1)
+        # Remove very small objects if needed
+        binary = self.remove_small_objects(binary, min_size=10)
 
         self.filtered_image = binary
         self.show_filtered_image()
 
     def remove_small_objects(self, binary_image, min_size=500):
-        """
-        Remove small connected components from binary_image.
-        Components smaller than min_size pixels are removed.
-        """
-        # Label connected components
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_image, 8, cv2.CV_32S)
-        
-        # Create an output mask
         output_mask = np.zeros_like(binary_image)
-        
         for i in range(1, num_labels):
             area = stats[i, cv2.CC_STAT_AREA]
             if area >= min_size:
                 output_mask[labels == i] = 255
-
         return output_mask
-
 
     def generate_ridge_ensemble(self):
         if self.input_image is None:
             return
             
-        # Use fixed parameters from paper for ensemble generation
+        # Adjust parameters or keep as is
         self.ensemble_generator.params = {
-            'sigma1_range': (1.5, 2.5, 0.5),  # Around paper's sigma1=2
-            'sigma2_range': (8.0, 12.0, 2.0),  # Around paper's sigma2=10
-            'threshold_range': (0.1, 0.9, 0.2)  # Reduced steps for faster processing
+            'sigma1_range': (1.5, 2.5, 0.5),
+            'sigma2_range': (8.0, 12.0, 2.0),
+            'threshold_range': (0.1, 0.9, 0.2)
         }
-        
+
         ensemble = self.ensemble_generator.generate_ensemble(self.input_image)
         self.filtered_image = ensemble
         self.show_filtered_image()
@@ -3954,7 +4081,7 @@ class MyWindow(QMainWindow):
         self.add_filter_tab("Laplacian", LaplacianFilterTab)
         self.add_filter_tab("Roberts", RobertsFilterTab)
         self.add_filter_tab("HED", HEDFilterTab)  # Add HED tab
-        self.add_filter_tab("DoG", DoGFilterTab)  # Add DoG tab
+        self.add_filter_tab("Frangi", FrangiFilterTab)  # Add Frangi tab
         # Add binarization controls below clean edges layout
         binarize_layout = QHBoxLayout()
         
@@ -4066,7 +4193,7 @@ class MyWindow(QMainWindow):
                 "Laplacian",
                 "Roberts",
                 "HED",  # Add HED to the list
-                "DoG"  # Add DoG to the list
+                "Frangi"  # Add Frangi to the list
             ]
             filter_name, ok = QInputDialog.getItem(self, "Select Filter", "Choose a filter:", filters, 0, False)
             if ok and filter_name:
@@ -4077,7 +4204,7 @@ class MyWindow(QMainWindow):
                     "Laplacian": LaplacianFilterTab,
                     "Roberts": RobertsFilterTab,
                     "HED": HEDFilterTab,  # Map "HED" to HEDFilterTab
-                    "DoG": DoGFilterTab  # Map "DoG" to DoGFilterTab
+                    "Frangi": FrangiFilterTab  # Map "Frangi" to Frangi
                 }
                 filter_class = filter_classes.get(filter_name)
                 if filter_class:
