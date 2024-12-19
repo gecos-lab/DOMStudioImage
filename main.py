@@ -1156,6 +1156,12 @@ class ManualInterpretationWindow(QDialog):
         self.is_edit_mode = False
         self.semi_auto_start_point = None
 
+        
+        # Initialize eraser properties
+        self.is_eraser_mode = False
+        self.eraser_size = 10
+        self.eraser_preview = None
+
         # Initialize Undo/Redo stacks
         self.undo_stack = deque()
         self.redo_stack = deque()
@@ -1163,6 +1169,7 @@ class ManualInterpretationWindow(QDialog):
         self.line_width = 2  # Default width
         self.line_buffer = 0  # Default buffer
         # Initialize UI
+        
         self.initUI()
 
     def initUI(self):
@@ -1282,6 +1289,28 @@ class ManualInterpretationWindow(QDialog):
         self.merge_distance_slider.setValue(3)
         self.merge_distance_slider.setEnabled(False)  # Initially disabled
         self.merge_distance_slider.valueChanged.connect(self.update_line_merging)
+
+        # Add Eraser button
+        self.eraser_button = QPushButton("Enable Eraser")
+        self.eraser_button.setCheckable(True)
+        self.eraser_button.clicked.connect(self.toggle_eraser)
+        button_layout.addWidget(self.eraser_button)
+
+        # Add Eraser Size Slider
+        eraser_control_layout = QHBoxLayout()
+        eraser_label = QLabel("Eraser Size:")
+        self.eraser_slider = QSlider(Qt.Horizontal)
+        self.eraser_slider.setMinimum(5)
+        self.eraser_slider.setMaximum(50)
+        self.eraser_slider.setValue(self.eraser_size)
+        self.eraser_slider.valueChanged.connect(self.update_eraser_size)
+        
+        eraser_control_layout.addWidget(eraser_label)
+        eraser_control_layout.addWidget(self.eraser_slider)
+        
+        # Add to main layout before button_layout
+        layout.addLayout(eraser_control_layout)
+
         
         morpho_layout.addWidget(self.merge_lines_checkbox)
         morpho_layout.addWidget(merge_label)
@@ -1291,9 +1320,142 @@ class ManualInterpretationWindow(QDialog):
         layout.addLayout(morpho_layout)
         self.setLayout(layout)
 
-        # Connect mouse events
+       # Install both event filters
         self.view.viewport().installEventFilter(self)
+        self.view.viewport().setMouseTracking(True)
+ 
     # Add these new methods
+
+    def toggle_eraser(self, checked):
+        """Toggle eraser mode"""
+        print("Eraser toggled:", checked)
+        self.is_eraser_mode = checked
+        self.is_drawing = False
+        self.is_semi_auto = False
+        self.is_edit_mode = False
+        
+        # Update button texts
+        self.eraser_button.setText("Disable Eraser" if checked else "Enable Eraser")
+        self.toggle_drawing_button.setText("Enable Manual Drawing")
+        self.toggle_semi_auto_button.setText("Enable Semi-Auto Drawing")
+        self.edit_mode_button.setText("Enter Edit Mode")
+        
+        # Update cursor
+        if checked:
+            self.view.viewport().setCursor(Qt.CrossCursor)
+        else:
+            self.view.viewport().setCursor(Qt.ArrowCursor)
+
+    def update_eraser_size(self, value):
+        """Update eraser size"""
+        self.eraser_size = value
+
+    def eraserEventFilter(self, source, event):
+        """Handle eraser events with proper event type checking"""
+        if source == self.view.viewport():
+            # Get position based on event type
+            if event.type() == QEvent.MouseMove:
+                pos = event.pos()
+                scene_pos = self.view.mapToScene(pos)
+                self.update_eraser_preview(scene_pos.x(), scene_pos.y())
+                
+                if event.buttons() & Qt.LeftButton:
+                    self.erase_at_point(scene_pos.x(), scene_pos.y())
+                    return True
+                    
+            elif event.type() == QEvent.MouseButtonPress:
+                if event.button() == Qt.LeftButton:
+                    pos = event.pos()
+                    scene_pos = self.view.mapToScene(pos)
+                    self.erase_at_point(scene_pos.x(), scene_pos.y())
+                    return True
+                    
+            elif event.type() == QEvent.MouseButtonRelease:
+                return True
+                
+            elif event.type() == QEvent.Leave:
+                if self.eraser_preview:
+                    self.scene.removeItem(self.eraser_preview)
+                    self.eraser_preview = None
+                return True
+                
+        return False
+
+    def erase_at_point(self, x, y):
+        from PyQt5.QtGui import QPainterPathStroker
+        eraser_region = QPainterPath()
+        eraser_region.addEllipse(QPointF(x, y), self.eraser_size, self.eraser_size)
+
+        lines_to_remove = []
+        for line in self.lines[:]:
+            if len(line.path_points) < 2:
+                continue
+
+            line_path = line.path()
+
+            # Create a stroked path
+            stroker = QPainterPathStroker()
+            stroker.setWidth(self.line_width + self.line_buffer * 2)
+            stroked_path = stroker.createStroke(line_path)
+
+            # Print debug information
+            print("Eraser center:", x, y)
+            print("Line bounding rect:", line_path.boundingRect())
+            print("Eraser bounding rect:", eraser_region.boundingRect())
+
+            if eraser_region.intersects(stroked_path):
+                print("Intersection detected with line:", line)
+                lines_to_remove.append(line)
+            else:
+                print("No intersection for line:", line)
+
+        for line in lines_to_remove:
+            self.delete_line(line)
+
+        if lines_to_remove:
+            self.scene.update()
+
+
+    def delete_line(self, line):
+        """Delete a line and its nodes with proper cleanup"""
+        try:
+            # First remove all nodes
+            for node in line.nodes[:]:
+                self.scene.removeItem(node)
+                node.lines.remove(line)
+                
+            # Remove line from scene and list
+            self.scene.removeItem(line)
+            if line in self.lines:
+                self.lines.remove(line)
+                
+            # Add to undo stack
+            self.undo_stack.append(('delete_line', line))
+            self.redo_stack.clear()
+            
+        except Exception as e:
+            print(f"Error in delete_line: {str(e)}")
+
+    def update_eraser_preview(self, x, y):
+        """Show preview of eraser area"""
+        if not self.eraser_preview:
+            # Create new preview
+            self.eraser_preview = self.scene.addEllipse(
+                x - self.eraser_size, 
+                y - self.eraser_size,
+                self.eraser_size * 2,
+                self.eraser_size * 2,
+                QPen(Qt.red)
+            )
+            self.eraser_preview.setZValue(1000)  # Keep on top
+        else:
+            # Update existing preview
+            self.eraser_preview.setRect(
+                x - self.eraser_size,
+                y - self.eraser_size, 
+                self.eraser_size * 2,
+                self.eraser_size * 2
+            )
     def update_line_width(self, value):
         """Update the width of all lines"""
         self.line_width = value
@@ -2241,33 +2403,34 @@ class ManualInterpretationWindow(QDialog):
         self.scene.update()
 
     def eventFilter(self, source, event):
+        """Handle drawing and semi-auto events"""
+        # Handle eraser events first if eraser mode is active
+        if self.is_eraser_mode:
+            return self.eraserEventFilter(source, event)
+            
+        # Original drawing/semi-auto event handling
         if not (self.is_drawing or self.is_semi_auto):
             return super().eventFilter(source, event)
             
-        if event.type() == event.MouseButtonPress:
+        if event.type() == QEvent.MouseButtonPress:
             scene_pos = self.view.mapToScene(event.pos())
             x, y = int(scene_pos.x()), int(scene_pos.y())
             
-            # Manual Drawing Mode
+            # Handle manual drawing
             if self.is_drawing:
                 if event.button() == Qt.LeftButton:
-                    # First click starts a new line, subsequent clicks add nodes
                     if not self.current_line:
                         self.current_line = [(x, y)]
                         self.add_manual_line(x, y)
                     else:
-                        # Add new point to existing line
                         self.current_line.append((x, y))
                         self.add_manual_line(x, y)
-                        
                 elif event.button() == Qt.RightButton:
-                    # Right click finishes the current line
                     if self.current_line:
-                        # Reset for next line
                         self.current_line = []
                         self.current_line_item = None
                         
-            # Semi-Auto Drawing Mode
+            # Handle semi-auto drawing
             elif self.is_semi_auto:
                 if event.button() == Qt.LeftButton:
                     if not self.semi_auto_start_point:
@@ -2278,9 +2441,10 @@ class ManualInterpretationWindow(QDialog):
                         end_point = (x, y)
                         self.semi_automatic_tracking(self.semi_auto_start_point, end_point)
                         self.semi_auto_start_point = None
-                
-            return True  # Event handled
+            return True
+            
         return super().eventFilter(source, event)
+
 
     def add_manual_line(self, x, y):
         """Improved manual line drawing with continuous path"""
