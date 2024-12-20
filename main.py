@@ -1290,6 +1290,13 @@ class ManualInterpretationWindow(QDialog):
         self.merge_distance_slider.setEnabled(False)  # Initially disabled
         self.merge_distance_slider.valueChanged.connect(self.update_line_merging)
 
+
+
+        # Add Clear All Lines button next to the export button
+        self.clear_all_button = QPushButton("Clear All Lines")
+        self.clear_all_button.clicked.connect(self.clear_all_lines)
+        layout.addWidget(self.clear_all_button)
+    
         # Add Eraser button
         self.eraser_button = QPushButton("Enable Eraser")
         self.eraser_button.setCheckable(True)
@@ -1349,6 +1356,43 @@ class ManualInterpretationWindow(QDialog):
     def update_eraser_size(self, value):
         """Update eraser size"""
         self.eraser_size = value
+
+    def clear_all_lines(self):
+        """Remove all lines and their nodes from the scene"""
+        reply = QMessageBox.question(
+            self, 
+            'Clear All Lines',
+            'Are you sure you want to remove all lines? This action can be undone.',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Store current state
+            state = {
+                'lines': self.lines.copy(),
+                'scene': self.scene
+            }
+            
+            # First remove all lines from scene
+            for line in self.lines[:]:
+                # Remove nodes first
+                for node in line.nodes[:]:
+                    if node.scene() == self.scene:
+                        self.scene.removeItem(node)
+                # Then remove line
+                if line.scene() == self.scene:
+                    self.scene.removeItem(line)
+            
+            # Clear lines list after scene cleanup
+            self.lines.clear()
+            
+            # Add to undo stack
+            self.undo_stack.append(('clear_all', state))
+            self.redo_stack.clear()
+            
+            # Update display
+            self.scene.update()
 
     def eraserEventFilter(self, source, event):
         """Handle eraser events with proper event type checking"""
@@ -2297,79 +2341,181 @@ class ManualInterpretationWindow(QDialog):
     def undo_action(self):
         if not self.undo_stack:
             return
-        action, obj = self.undo_stack.pop()
-        if action == 'add_line':
-            # Remove the line
-            for node in obj.nodes.copy():
-                self.scene.removeItem(node)
-            self.scene.removeItem(obj)
-            self.lines.remove(obj)
-            # Push to redo stack
-            self.redo_stack.append(('add_line', obj))
-        elif action == 'add_node':
-            # Remove the node
-            self.scene.removeItem(obj)
-            obj.lines[0].nodes.remove(obj)
-            # Push to redo stack
-            self.redo_stack.append(('add_node', obj))
-        elif action == 'delete_node':
-            # Re-add the node and reconnect lines
-            self.scene.addItem(obj)
-            for line in obj.lines:
-                line.add_node(obj)
-            self.lines.append(line)
-            # Push to redo stack
-            self.redo_stack.append(('delete_node', obj))
-        elif action == 'delete_line':
-            # Re-add the line and reconnect nodes
-            self.scene.addItem(obj)
-            for node in obj.nodes:
-                self.scene.addItem(node)
-                node.lines.append(obj)
-            self.lines.append(obj)
-            # Push to redo stack
-            self.redo_stack.append(('delete_line', obj))
-        self.show_overlay()
+            
+        try:
+            action, state = self.undo_stack.pop()
+            
+            if action == 'add_line':
+                # Handle adding line
+                if isinstance(state, LineItem) and state in self.lines:
+                    # Remove nodes first
+                    for node in state.nodes[:]:
+                        if node.scene() == self.scene:
+                            self.scene.removeItem(node)
+                    # Remove line
+                    if state.scene() == self.scene:
+                        self.scene.removeItem(state)
+                        self.lines.remove(state)
+                    # Add to redo stack
+                    self.redo_stack.append(('add_line', state))
+                    
+            elif action == 'clear_all':
+                # Store current state for redo
+                redo_state = {
+                    'lines': self.lines.copy(),
+                    'scene': self.scene
+                }
+                
+                # Clear current lines
+                self.lines.clear()
+                
+                # Restore previous state
+                for line in state['lines']:
+                    if line not in self.lines:
+                        self.lines.append(line)
+                        self.scene.addItem(line)
+                        for node in line.nodes:
+                            self.scene.addItem(node)
+                            
+                # Add to redo stack        
+                self.redo_stack.append(('clear_all', redo_state))
+                
+            elif action == 'add_node':
+                if isinstance(state, NodeItem) and state.scene() == self.scene:
+                    # Remove node from line
+                    if state.lines:
+                        state.lines[0].nodes.remove(state)
+                    # Remove from scene    
+                    self.scene.removeItem(state)
+                    # Add to redo stack
+                    self.redo_stack.append(('add_node', state))
+                    
+            elif action == 'delete_node':
+                if isinstance(state, NodeItem) and not state.scene():
+                    # Add node back
+                    self.scene.addItem(state)
+                    # Reconnect to lines
+                    for line in state.lines:
+                        line.nodes.append(state)
+                    # Add to redo stack    
+                    self.redo_stack.append(('delete_node', state))
+                    
+            elif action == 'delete_line':
+                if isinstance(state, LineItem) and state not in self.lines:
+                    # Add line back
+                    self.scene.addItem(state)
+                    self.lines.append(state)
+                    # Add nodes back
+                    for node in state.nodes:
+                        self.scene.addItem(node)
+                        node.lines.append(state)
+                    # Add to redo stack
+                    self.redo_stack.append(('delete_line', state))
+                    
+            elif action == 'update_line':
+                line, old_points = state
+                # Store current points for redo
+                current_points = line.path_points[:]
+                # Restore old points
+                line.path_points = old_points
+                line.updatePath()
+                # Add to redo stack
+                self.redo_stack.append(('update_line', (line, current_points)))
+                    
+            self.scene.update()
+            self.show_overlay()
+            
+        except Exception as e:
+            print(f"Error in undo_action: {str(e)}")
+            self.undo_stack.clear()
+            self.redo_stack.clear()
 
     def redo_action(self):
         if not self.redo_stack:
             return
-        action, obj = self.redo_stack.pop()
-        if action == 'add_line':
-            # Re-add the line
-            self.scene.addItem(obj)
-            self.lines.append(obj)
-            for node in obj.nodes:
-                self.scene.addItem(node)
-                node.lines.append(obj)
-            # Push back to undo stack
-            self.undo_stack.append(('add_line', obj))
-        elif action == 'add_node':
-            # Re-add the node
-            self.scene.addItem(obj)
-            obj.lines[0].add_node(obj)
-            # Push back to undo stack
-            self.undo_stack.append(('add_node', obj))
-        elif action == 'delete_node':
-            # Remove the node again
-            for line in obj.lines.copy():
-                line.remove_node(obj)
-                if len(line.nodes) < 2:
-                    self.delete_line(line)
-            self.scene.removeItem(obj)
-            # Push back to undo stack
-            self.undo_stack.append(('delete_node', obj))
-        elif action == 'delete_line':
-            # Remove the line again
-            for node in obj.nodes.copy():
-                obj.remove_node(node)
-                self.scene.removeItem(node)
-            self.scene.removeItem(obj)
-            self.lines.remove(obj)
-            # Push back to undo stack
-            self.undo_stack.append(('delete_line', obj))
-        self.show_overlay()
-
+            
+        try:
+            action, state = self.redo_stack.pop()
+            
+            if action == 'add_line':
+                if isinstance(state, LineItem) and state not in self.lines:
+                    # Add line back
+                    self.scene.addItem(state)
+                    self.lines.append(state)
+                    # Add nodes
+                    for node in state.nodes:
+                        self.scene.addItem(node)
+                        node.lines.append(state)
+                    # Add to undo stack
+                    self.undo_stack.append(('add_line', state))
+                    
+            elif action == 'clear_all':
+                # Store current state for undo
+                undo_state = {
+                    'lines': self.lines.copy(),
+                    'scene': self.scene
+                }
+                
+                # Clear current lines
+                for line in self.lines[:]:
+                    for node in line.nodes[:]:
+                        if node.scene() == self.scene:
+                            self.scene.removeItem(node)
+                    if line.scene() == self.scene:
+                        self.scene.removeItem(line)
+                self.lines.clear()
+                
+                # Add to undo stack
+                self.undo_stack.append(('clear_all', undo_state))
+                
+            elif action == 'add_node':
+                if isinstance(state, NodeItem):
+                    # Add node back
+                    self.scene.addItem(state)
+                    if state.lines:
+                        state.lines[0].nodes.append(state)
+                    # Add to undo stack
+                    self.undo_stack.append(('add_node', state))
+                    
+            elif action == 'delete_node':
+                if isinstance(state, NodeItem):
+                    # Remove node connections
+                    for line in state.lines[:]:
+                        line.nodes.remove(state)
+                    # Remove from scene
+                    self.scene.removeItem(state)
+                    # Add to undo stack
+                    self.undo_stack.append(('delete_node', state))
+                    
+            elif action == 'delete_line':
+                if isinstance(state, LineItem) and state in self.lines:
+                    # Remove nodes first
+                    for node in state.nodes[:]:
+                        state.nodes.remove(node)
+                        self.scene.removeItem(node)
+                    # Remove line
+                    self.scene.removeItem(state)
+                    self.lines.remove(state)
+                    # Add to undo stack
+                    self.undo_stack.append(('delete_line', state))
+                    
+            elif action == 'update_line':
+                line, new_points = state
+                # Store current points for undo
+                old_points = line.path_points[:]
+                # Update to new points
+                line.path_points = new_points
+                line.updatePath()
+                # Add to undo stack
+                self.undo_stack.append(('update_line', (line, old_points)))
+                    
+            self.scene.update()
+            self.show_overlay()
+            
+        except Exception as e:
+            print(f"Error in redo_action: {str(e)}")
+            self.undo_stack.clear()
+            self.redo_stack.clear()
     def show_overlay(self):
         # Update the scene to reflect edit mode
         for line in self.lines:
