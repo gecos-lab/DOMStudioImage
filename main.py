@@ -2591,7 +2591,6 @@ class ManualInterpretationWindow(QDialog):
             
         return super().eventFilter(source, event)
 
-
     def add_manual_line(self, x, y):
         """Improved manual line drawing with continuous path"""
         x, y = int(x), int(y)  # Ensure integer coordinates
@@ -3949,13 +3948,93 @@ class EdgeLinkWindow(QDialog):
             self.edge_link_updated.emit(self.edge_linked_image)
             self.accept()  # Close the dialog
 
+class ManualInterpretationHandler:
+    def __init__(self):
+        self.manual_mask = None
+        
+    def load_mask_file(self, filepath, target_size=None):
+        """Load and preprocess mask file with robust type handling"""
+        try:
+            # Load image based on file type
+            if filepath.lower().endswith(('.tiff', '.tif')):
+                img_array = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
+            else:
+                img_array = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+                
+            if img_array is None:
+                raise IOError(f"Cannot open image file: {filepath}")
+
+            # Convert to grayscale if needed
+            if len(img_array.shape) == 3:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
+
+            # Convert to uint8 if needed
+            if img_array.dtype != np.uint8:
+                if img_array.dtype == np.float32 or img_array.dtype == np.float64:
+                    img_array = (img_array * 255).astype(np.uint8)
+                else:
+                    img_array = cv2.normalize(img_array, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
+            # Apply Otsu thresholding
+            _, mask_binary = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            # Resize if target_size is provided
+            if target_size is not None:
+                h, w = target_size[:2]
+                mask_binary = cv2.resize(mask_binary, (w, h), interpolation=cv2.INTER_NEAREST)
+
+            self.manual_mask = mask_binary
+            return mask_binary
+
+        except Exception as e:
+            print(f"Error loading mask: {str(e)}")
+            raise
+
+    def calculate_metrics(self, filter_result):
+        """Calculate precision and recall against manual interpretation"""
+        if self.manual_mask is None:
+            raise ValueError("No manual interpretation loaded")
+            
+        # Convert boolean mask to uint8 for resize operation
+        manual_mask_uint8 = self.manual_mask.astype(np.uint8) * 255
+        
+        # Resize manual mask to match filter result dimensions
+        resized_manual = cv2.resize(manual_mask_uint8, 
+                                (filter_result.shape[1], filter_result.shape[0]), 
+                                interpolation=cv2.INTER_NEAREST)
+        
+        # Convert back to boolean
+        manual = resized_manual > 0
+        auto = filter_result > 0
+
+        # Calculate metrics
+        true_positive = np.sum(np.logical_and(manual, auto))
+        false_positive = np.sum(np.logical_and(np.logical_not(manual), auto))
+        false_negative = np.sum(np.logical_and(manual, np.logical_not(auto)))
+
+        precision = true_positive / (true_positive + false_positive) if (true_positive + false_positive) > 0 else 0
+        recall = true_positive / (true_positive + false_negative) if (true_positive + false_negative) > 0 else 0
+
+        return {'precision': precision, 'recall': recall}
+
+
+
 class PrecisionRecallDialog(QDialog):
     def __init__(self, parent=None, **filter_data):
         super().__init__(parent)
         self.setWindowTitle("Precision and Recall Metrics")
         self.setGeometry(100, 100, 800, 600)
-
+        
+        # Store filter_data as instance variable
+        self.filter_data = filter_data
+        
         layout = QVBoxLayout()
+        
+        # Add button to load manual interpretation
+        self.load_button = QPushButton("Load Manual Interpretation")
+        self.load_button.clicked.connect(self.load_manual_interpretation)
+        layout.addWidget(self.load_button)
+        
 
         # Create the plot
         self.figure, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(8, 10))
@@ -3970,7 +4049,30 @@ class PrecisionRecallDialog(QDialog):
         self.setLayout(layout)
 
         self.plot_data(filter_data)
-
+    def load_manual_interpretation(self):
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Manual Interpretation",
+            "",
+            "TIFF Files (*.tiff *.tif)"
+        )
+        
+        if filepath:
+            handler = ManualInterpretationHandler()
+            manual_mask = handler.load_tiff(filepath)
+            
+            # Recalculate metrics for each filter
+            updated_metrics = {}
+            for filter_name, filter_result in self.filter_data.items():
+                metrics = handler.calculate_metrics(filter_result['result'])
+                updated_metrics[filter_name] = {
+                    **filter_result,
+                    'precision': metrics['precision'],
+                    'recall': metrics['recall']
+                }
+            
+            # Update the plots with new metrics
+            self.plot_data(updated_metrics)
     def plot_data(self, filter_data):
         filters = list(filter_data.keys())
         precisions = [data['precision'] for data in filter_data.values()]
@@ -3997,13 +4099,32 @@ class PrecisionRecallDialog(QDialog):
             text += f"{filter_name} Filter:\n"
             text += f"Precision: {data['precision']:.4f}\n"
             text += f"Recall: {data['recall']:.4f}\n"
-            if 'low' in data and 'high' in data:
-                text += f"Thresholds: low={data['low']}, high={data['high']}\n"
-            elif 'ksize' in data:
+            
+            # Add filter-specific parameters
+            if 'threshold1' in data and 'threshold2' in data:  # Canny
+                text += f"Threshold1: {data['threshold1']}\n"
+                text += f"Threshold2: {data['threshold2']}\n"
+            if 'ksize' in data:  # Sobel
                 text += f"Kernel Size: {data['ksize']}\n"
-            elif 'min_contrast' in data:
+            if 'min_contrast' in data:  # Shearlet
                 text += f"Min Contrast: {data['min_contrast']}\n"
+                text += f"Binary Threshold: {data['binary_threshold']}\n"
+                text += f"Min Size: {data['min_size']}\n"
+            if 'laplacian_ksize' in data:  # Laplacian
+                text += f"Kernel Size: {data['laplacian_ksize']}\n"
+            if 'model' in data:  # HED
+                text += f"Model: {data['model']}\n"
+                text += f"Side Output: {data['side_output']}\n"
+                text += f"Threshold: {data['threshold']}\n"
+            if 'scale_min' in data:  # Frangi
+                text += f"Scale Min: {data['scale_min']}\n"
+                text += f"Scale Max: {data['scale_max']}\n"
+                text += f"Scale Step: {data['scale_step']}\n"
+                text += f"Alpha: {data['alpha']:.1f}\n"
+                text += f"Beta: {data['beta']:.1f}\n"
+                text += f"Gamma: {data['gamma']}\n"
             text += "\n"
+            
         self.text_area.setText(text)
 
 class BatchProcessDialog(QDialog):
@@ -4667,62 +4788,194 @@ class MyWindow(QMainWindow):
         dialog.exec_()
 
     def show_statistics_dialog(self):
+        """
+        Shows a statistics dialog to calculate precision and recall for each filter,
+        using a manual interpretation mask loaded exactly once via ManualInterpretationHandler.
+        Also ensures the predicted images are in uint8 format before thresholding.
+        """
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = None
+
         if self.img is None:
             QMessageBox.warning(self, "Error", "Please load an image first.")
             return
 
-        # Ask user to select a manual interpretation mask
-        mask_path, _ = QFileDialog.getOpenFileName(self, "Select Manual Interpretation Mask", "",
-                                                   "Image Files (*.png *.jpg *.bmp)")
+        # Let user pick the manual-interpretation file (TIFF, PNG, etc.)
+        mask_path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "Select Manual Interpretation Mask", 
+            "",
+            "Image Files (*.png *.jpg *.bmp *.tiff *.tif);;TIFF Files (*.tiff *.tif);;All Files (*.*)"
+        )
         if not mask_path:
             return
 
-        # Load and preprocess the mask
-        manual_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-        manual_mask = cv2.resize(manual_mask, (self.img.shape[1], self.img.shape[0]))
-        manual_mask = (manual_mask > 128).astype(np.uint8)  # Binarize the mask
+        # Ask user for a buffer size
+        buffer_size, ok = QInputDialog.getInt(
+            self, 
+            "Buffer Size",
+            "Enter buffer size in pixels (1-5):",
+            value=2,
+            min=1,
+            max=5
+        )
+        if not ok:
+            return
 
-        # Calculate for each filter
+        # Use ManualInterpretationHandler for all mask loading logic
+        handler = ManualInterpretationHandler()
+        try:
+            # This method should handle TIFF vs. non-TIFF, do binarization,
+            # and resize to match self.img.shape, all in one place.
+            manual_mask = handler.load_mask_file(mask_path, target_size=self.img.shape)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to load manual mask: {str(e)}")
+            print(f"Error loading manual mask: {str(e)}")
+            return
+
+        # Now we do the precision/recall for each filter
         filter_data = {}
-        for i in range(self.tab_widget.count() - 1):  # Exclude the "+" tab
-            tab = self.tab_widget.widget(i)
-            if isinstance(tab, FilterTab) and tab.filtered_image is not None:
-                filter_name = self.tab_widget.tabText(i)
+        try:
+            # Iterate through each filter tab (excluding the '+' tab at the end)
+            for i in range(self.tab_widget.count() - 1):
+                tab = self.tab_widget.widget(i)
+                if isinstance(tab, FilterTab) and tab.filtered_image is not None:
+                    filter_name = self.tab_widget.tabText(i)
+                    print(f"\nCalculating metrics for {filter_name}...")
 
-                # Resize the filtered image to match the manual mask
-                resized_filtered_image = cv2.resize(tab.filtered_image, (manual_mask.shape[1], manual_mask.shape[0]))
+                    # Make sure the filtered image is the same size as the manual mask
+                    resized_filtered = cv2.resize(
+                        tab.filtered_image,
+                        (manual_mask.shape[1], manual_mask.shape[0]),
+                        interpolation=cv2.INTER_NEAREST
+                    )
 
-                precision, recall = self.calculate_precision_recall(manual_mask, resized_filtered_image)
-                filter_data[filter_name] = {
-                    'precision': precision,
-                    'recall': recall
-                }
+                    # -- KEY FIX HERE --
+                    # If the filtered image is bool (or anything other than uint8),
+                    # convert it to uint8 [0..255] so threshold() won't fail.
+                    if resized_filtered.dtype == np.bool_:
+                        resized_filtered = (resized_filtered.astype(np.uint8)) * 255
+                    elif resized_filtered.dtype != np.uint8:
+                        # Convert other dtypes (e.g. float) to [0..255]
+                        resized_filtered = cv2.normalize(
+                            resized_filtered, None, 0, 255, 
+                            cv2.NORM_MINMAX, dtype=cv2.CV_8U
+                        )
 
-                # Add specific filter parameters
-                if isinstance(tab, CannyFilterTab):
-                    filter_data[filter_name]['low'] = tab.threshold1.value()
-                    filter_data[filter_name]['high'] = tab.threshold2.value()
-                elif isinstance(tab, SobelFilterTab):
-                    filter_data[filter_name]['ksize'] = tab.ksize.value()
-                elif isinstance(tab, ShearletFilterTab):
-                    filter_data[filter_name]['min_contrast'] = tab.min_contrast.value()
+                    # Ensure binary with threshold
+                    _, resized_filtered = cv2.threshold(resized_filtered, 127, 255, cv2.THRESH_BINARY)
 
-        # Show results in the new dialog
+                    # Calculate metrics (this uses your improved method with `buffer_size`)
+                    precision, recall = self.calculate_precision_recall(
+                        manual_mask,
+                        resized_filtered,
+                        buffer_size=buffer_size
+                    )
+                    print(f"{filter_name} - Precision: {precision:.4f}, Recall: {recall:.4f}")
+
+                    # Collect metrics for display in PrecisionRecallDialog
+                    filter_data[filter_name] = {
+                        'precision': precision,
+                        'recall': recall,
+                        'result': resized_filtered,
+                        'buffer_size': buffer_size
+                    }
+
+                    # Optionally add filter-specific parameters
+                    if isinstance(tab, CannyFilterTab):
+                        filter_data[filter_name].update({
+                            'threshold1': tab.threshold1.value(),
+                            'threshold2': tab.threshold2.value()
+                        })
+                    elif isinstance(tab, SobelFilterTab):
+                        filter_data[filter_name]['ksize'] = tab.ksize.value()
+                    elif isinstance(tab, ShearletFilterTab):
+                        filter_data[filter_name].update({
+                            'min_contrast': tab.min_contrast.value(),
+                            'binary_threshold': tab.threshold_slider.value(),
+                            'min_size': tab.min_size_slider.value()
+                        })
+                    elif isinstance(tab, LaplacianFilterTab):
+                        filter_data[filter_name]['laplacian_ksize'] = tab.laplacian_kernel_size
+                    elif isinstance(tab, RobertsFilterTab):
+                        pass  # No extra parameters
+                    elif isinstance(tab, HEDFilterTab):
+                        filter_data[filter_name].update({
+                            'model': tab.selected_model,
+                            'side_output': tab.side_output_combo.currentText(),
+                            'threshold': tab.threshold
+                        })
+                    elif isinstance(tab, FrangiFilterTab):
+                        filter_data[filter_name].update({
+                            'scale_min': tab.scale_min_slider.value(),
+                            'scale_max': tab.scale_max_slider.value(),
+                            'scale_step': tab.scale_step_slider.value(),
+                            'alpha': tab.alpha_slider.value() / 10.0,
+                            'beta': tab.beta_slider.value() / 10.0,
+                            'gamma': tab.gamma_slider.value()
+                        })
+
+        except Exception as e:
+            print(f"Error calculating metrics: {str(e)}")
+            traceback.print_exc()
+            QMessageBox.warning(self, "Error", f"Failed to calculate metrics: {str(e)}")
+            return
+
+        # Finally, show the Precision/Recall dialog with all collected data
         dialog = PrecisionRecallDialog(self, **filter_data)
         dialog.exec_()
 
-    def calculate_precision_recall(self, ground_truth, prediction):
-        # Ensure both inputs are binary
+    def calculate_precision_recall(self, ground_truth, prediction, buffer_size=2):
+        """
+        Calculate precision and recall with improved accuracy.
+        
+        Args:
+            ground_truth: Binary ground truth mask
+            prediction: Binary prediction mask
+            buffer_size: Buffer size in pixels
+        """
+        # Ensure binary images
         ground_truth = (ground_truth > 0).astype(np.uint8)
         prediction = (prediction > 0).astype(np.uint8)
-
-        true_positives = np.sum(np.logical_and(prediction == 1, ground_truth == 1))
-        false_positives = np.sum(np.logical_and(prediction == 1, ground_truth == 0))
-        false_negatives = np.sum(np.logical_and(prediction == 0, ground_truth == 1))
-
-        precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
-        recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
-
+        
+        # Thin both images to single-pixel width to ensure fair comparison
+        ground_truth_thinned = skeletonize(ground_truth).astype(np.uint8)
+        prediction_thinned = skeletonize(prediction).astype(np.uint8)
+        
+        # Create distance transforms
+        gt_dist = cv2.distanceTransform(1 - ground_truth_thinned, cv2.DIST_L2, 3)
+        pred_dist = cv2.distanceTransform(1 - prediction_thinned, cv2.DIST_L2, 3)
+        
+        # Create matching masks using buffer
+        gt_matched = gt_dist <= buffer_size
+        pred_matched = pred_dist <= buffer_size
+        
+        # Calculate true positives for both precision and recall
+        true_pos_precision = np.sum(np.logical_and(prediction_thinned == 1, gt_matched))
+        false_pos = np.sum(np.logical_and(prediction_thinned == 1, ~gt_matched))
+        
+        true_pos_recall = np.sum(np.logical_and(ground_truth_thinned == 1, pred_matched))
+        false_neg = np.sum(np.logical_and(ground_truth_thinned == 1, ~pred_matched))
+        
+        # Calculate metrics
+        precision = true_pos_precision / (true_pos_precision + false_pos) if (true_pos_precision + false_pos) > 0 else 0
+        recall = true_pos_recall / (true_pos_recall + false_neg) if (true_pos_recall + false_neg) > 0 else 0
+        
+        # Create visualization for debugging
+        debug_vis = np.zeros((*ground_truth.shape, 3), dtype=np.uint8)
+        debug_vis[ground_truth_thinned == 1] = [0, 255, 0]  # Ground truth in green
+        debug_vis[prediction_thinned == 1] = [0, 0, 255]    # Predictions in red
+        debug_vis[np.logical_and(prediction_thinned == 1, gt_matched)] = [255, 255, 0]  # Matches in yellow
+        
+        # Save visualization
+        # cv2.imwrite('precision_recall_debug.png', debug_vis)
+        
+        # Print detailed metrics
+        print(f"True Positives (Precision): {true_pos_precision}")
+        print(f"False Positives: {false_pos}")
+        print(f"True Positives (Recall): {true_pos_recall}")
+        print(f"False Negatives: {false_neg}")
+        
         return precision, recall
 
     def show_edge_measurement(self):
