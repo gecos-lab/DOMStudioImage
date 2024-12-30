@@ -1237,7 +1237,7 @@ class ManualInterpretationWindow(QDialog):
 
         self.export_button = QPushButton("Export to Shapefile")
         self.export_button.clicked.connect(self.export_to_shapefile)
-        layout.addWidget(self.export_button)
+        button_layout.addWidget(self.export_button)
         # **Optional Enhancement: Undo and Redo Buttons**
         undo_redo_layout = QHBoxLayout()
         self.undo_button = QPushButton("Undo")
@@ -1512,13 +1512,13 @@ class ManualInterpretationWindow(QDialog):
     def export_to_shapefile(self):
         """Export the drawn lines to a shapefile with CRS and optionally create a geotiff copy"""
         try:
-            # Create list of LineString geometries with y-coordinate flipped
+            # Create list of LineString geometries
             geometries = []
             for line in self.lines:
                 if len(line.path_points) >= 2:
-                    # Flip the y coordinates to match GeoTIFF orientation
                     height = self.parent().img.shape[0]
-                    coords = [(float(x), float(height - y)) for x, y in line.path_points]
+                    # Don't flip y-coordinates here
+                    coords = [(float(x), float(y)) for x, y in line.path_points]
                     if len(coords) >= 2:
                         geometries.append(LineString(coords))
 
@@ -1527,55 +1527,58 @@ class ManualInterpretationWindow(QDialog):
                 return
 
             # Create GeoDataFrame
+             # Create GeoDataFrame
             gdf = gpd.GeoDataFrame(geometry=geometries)
             
             # Get parent window and image dimensions
             parent_window = self.parent()
             height, width = parent_window.img.shape[:2]
 
-            if hasattr(parent_window, 'geotiff_crs') and parent_window.geotiff_crs:
-                # Use original GeoTIFF CRS and transform
+            has_georeference = (hasattr(parent_window, 'geotiff_crs') and 
+                            parent_window.geotiff_crs and 
+                            hasattr(parent_window, 'geotiff_transform'))
+
+            if has_georeference:
                 gdf.set_crs(parent_window.geotiff_crs, inplace=True)
                 used_crs = parent_window.geotiff_crs
                 
-                if hasattr(parent_window, 'geotiff_transform'):
-                    def pixel_to_coords(geom):
-                        if geom.is_empty:
-                            return geom
-                        coords = []
-                        for x, y in geom.coords:
-                            world_x, world_y = rasterio.transform.xy(
-                                parent_window.geotiff_transform, y, x)
-                            coords.append((world_x, world_y))
-                        return LineString(coords)
-                    
-                    gdf['geometry'] = gdf['geometry'].apply(pixel_to_coords)
+                def pixel_to_coords(geom):
+                    if geom.is_empty:
+                        return geom
+                    coords = []
+                    for x, y in geom.coords:
+                        # Fix: Use y directly without height subtraction
+                        world_x, world_y = rasterio.transform.xy(
+                            parent_window.geotiff_transform, y, x
+                        )
+                        coords.append((world_x, world_y))
+                    return LineString(coords)
+                
+                gdf['geometry'] = gdf['geometry'].apply(pixel_to_coords)
             else:
-                # Create transform that preserves pixel coordinates
+                # Fix: Use proper Affine transform with negative y scaling
                 transform = rasterio.transform.Affine(
-                    1, 0, 0,    # x scaling, x shearing, x translation
-                    0, -1, height    # y shearing, y scaling (negative), y translation
+                    1, 0, 0,      # x scaling, x shearing, x translation
+                    0, -1, height # y shearing, y scaling (negative), y translation at height
                 )
+
                 
                 # Use simple projected CRS
                 crs = rasterio.crs.CRS.from_string("+proj=eqc +lat_ts=0 +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs")
                 used_crs = crs
-                
-                # Set CRS for shapefile
                 gdf.set_crs(crs, inplace=True)
                 
-                # Create a georeferenced copy of the original image
+                # Create a georeferenced copy only if image doesn't have coordinates
                 if parent_window and hasattr(parent_window, 'img'):
                     try:
                         geotiff_path, _ = QFileDialog.getSaveFileName(
                             self,
-                            "Save Georeferenced Image Copy",
+                            "Save Georeferenced Image Copy", 
                             "",
                             "GeoTIFF (*.tif)"
                         )
                         
                         if geotiff_path:
-                            # Create GeoTIFF with same coordinate system
                             with rasterio.open(
                                 geotiff_path,
                                 'w',
@@ -1599,30 +1602,30 @@ class ManualInterpretationWindow(QDialog):
                     except Exception as e:
                         QMessageBox.warning(
                             self,
-                            "Warning",
+                            "Warning", 
                             f"Failed to create georeferenced image copy: {str(e)}"
                         )
 
-                # Save shapefile
-                file_name, _ = QFileDialog.getSaveFileName(
+            # Save shapefile
+            file_name, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Shapefile",
+                "",
+                "Shapefile (*.shp)"
+            )
+
+            if file_name:
+                if not file_name.lower().endswith('.shp'):
+                    file_name += '.shp'
+
+                gdf.to_file(file_name)
+                
+                success_msg = f"Lines exported to {os.path.basename(file_name)}\nCRS: {used_crs}"
+                QMessageBox.information(
                     self,
-                    "Save Shapefile",
-                    "",
-                    "Shapefile (*.shp)"
+                    "Export Successful",
+                    success_msg
                 )
-
-                if file_name:
-                    if not file_name.lower().endswith('.shp'):
-                        file_name += '.shp'
-
-                    gdf.to_file(file_name)
-                    
-                    success_msg = f"Lines exported to {os.path.basename(file_name)}\nCRS: {used_crs}"
-                    QMessageBox.information(
-                        self,
-                        "Export Successful",
-                        success_msg
-                    )
 
         except Exception as e:
             QMessageBox.critical(
@@ -3948,6 +3951,312 @@ class EdgeLinkWindow(QDialog):
             self.edge_link_updated.emit(self.edge_linked_image)
             self.accept()  # Close the dialog
 
+
+
+
+class VectorMetricsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Vector-Based Metrics")
+        self.setGeometry(100, 100, 800, 600)
+        self.auto_lines = []
+        self.manual_lines = []
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+
+        # File loading section
+        file_group = QGroupBox("Load Vector Files")
+        file_layout = QHBoxLayout()
+
+        # Auto lines loading
+        auto_layout = QVBoxLayout()
+        self.auto_label = QLabel("Auto Lines: None")
+        auto_btn = QPushButton("Load Auto Lines")
+        auto_btn.clicked.connect(self.load_auto_lines)
+        auto_layout.addWidget(self.auto_label)
+        auto_layout.addWidget(auto_btn)
+        file_layout.addLayout(auto_layout)
+
+        # Manual lines loading
+        manual_layout = QVBoxLayout()
+        self.manual_label = QLabel("Manual Lines: None")
+        manual_btn = QPushButton("Load Manual Lines")
+        manual_btn.clicked.connect(self.load_manual_lines)
+        manual_layout.addWidget(self.manual_label)
+        manual_layout.addWidget(manual_btn)
+        file_layout.addLayout(manual_layout)
+
+        file_group.setLayout(file_layout)
+        layout.addWidget(file_group)
+
+        # Parameters section
+        param_group = QGroupBox("Analysis Parameters")
+        param_layout = QFormLayout()
+
+        self.buffer_size = QSpinBox()
+        self.buffer_size.setRange(1, 50)
+        self.buffer_size.setValue(5)
+        param_layout.addRow("Buffer Size (px):", self.buffer_size)
+
+        self.angle_threshold = QSpinBox()
+        self.angle_threshold.setRange(1, 90)
+        self.angle_threshold.setValue(15)
+        param_layout.addRow("Angle Threshold (°):", self.angle_threshold)
+
+        param_group.setLayout(param_layout)
+        layout.addWidget(param_group)
+
+        # Results visualization
+        self.figure = Figure(figsize=(6, 4))
+        self.canvas = FigureCanvas(self.figure)
+        layout.addWidget(self.canvas)
+
+        # Results text area
+        self.results_text = QTextEdit()
+        self.results_text.setReadOnly(True)
+        layout.addWidget(self.results_text)
+
+        # Analyze button
+        self.analyze_btn = QPushButton("Analyze")
+        self.analyze_btn.clicked.connect(self.analyze_vectors)
+        layout.addWidget(self.analyze_btn)
+
+        self.setLayout(layout)
+
+    def load_auto_lines(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Auto Lines", "", "Shapefiles (*.shp);;All Files (*.*)"
+        )
+        if file_path:
+            try:
+                gdf = gpd.read_file(file_path)
+                self.auto_lines = [line for line in gdf.geometry]
+                self.auto_label.setText(f"Auto Lines: {len(self.auto_lines)} features")
+                self.update_plot()
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to load auto lines: {str(e)}")
+
+    def load_manual_lines(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Manual Lines", "", "Shapefiles (*.shp);;All Files (*.*)"
+        )
+        if file_path:
+            try:
+                gdf = gpd.read_file(file_path)
+                self.manual_lines = [line for line in gdf.geometry]
+                self.manual_label.setText(f"Manual Lines: {len(self.manual_lines)} features")
+                self.update_plot()
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to load manual lines: {str(e)}")
+
+    def update_plot(self):
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+
+        # Plot auto lines in blue
+        if self.auto_lines:
+            for line in self.auto_lines:
+                xs, ys = line.xy
+                ax.plot(xs, ys, 'b-', alpha=0.5, label='Auto')
+
+        # Plot manual lines in red
+        if self.manual_lines:
+            for line in self.manual_lines:
+                xs, ys = line.xy
+                ax.plot(xs, ys, 'r-', alpha=0.5, label='Manual')
+
+        ax.legend()
+        ax.set_aspect('equal')
+        self.canvas.draw()
+
+    def analyze_vectors(self):
+        if not self.auto_lines or not self.manual_lines:
+            QMessageBox.warning(self, "Error", "Please load both auto and manual lines first.")
+            return
+
+        try:
+            buffer_size = self.buffer_size.value()
+            angle_threshold = self.angle_threshold.value()
+
+            # Calculate metrics
+            results = {
+                'hausdorff': self.calculate_hausdorff(),
+                'mean_distance': self.calculate_mean_distance(),
+                'length_ratio': self.calculate_length_ratio(),
+                'orientation_similarity': self.calculate_orientation_similarity(angle_threshold),
+                'coverage': self.calculate_coverage(buffer_size)
+            }
+
+            # Update results text
+            self.show_results(results)
+            
+            # Update plot with comparison visualization
+            self.plot_comparison(results)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Analysis failed: {str(e)}")
+
+    def calculate_hausdorff(self):
+        """Calculate Hausdorff distance between auto and manual line sets"""
+        max_dist = 0
+        for auto_line in self.auto_lines:
+            min_dist = float('inf')
+            for manual_line in self.manual_lines:
+                dist = auto_line.hausdorff_distance(manual_line)
+                min_dist = min(min_dist, dist)
+            max_dist = max(max_dist, min_dist)
+        return max_dist
+
+    def calculate_mean_distance(self):
+        """Calculate mean perpendicular distance between line sets"""
+        distances = []
+        for auto_line in self.auto_lines:
+            for manual_line in self.manual_lines:
+                distances.append(auto_line.distance(manual_line))
+        return np.mean(distances) if distances else 0
+
+    def calculate_length_ratio(self):
+        """Calculate ratio of total lengths between auto and manual lines"""
+        auto_length = sum(line.length for line in self.auto_lines)
+        manual_length = sum(line.length for line in self.manual_lines)
+        return auto_length / manual_length if manual_length > 0 else 0
+
+    def calculate_orientation_similarity(self, angle_threshold):
+        """Calculate similarity in orientation distributions"""
+        def get_orientation(line):
+            if isinstance(line, LineString):
+                coords = np.array(line.coords)
+                dx = coords[-1][0] - coords[0][0]
+                dy = coords[-1][1] - coords[0][1]
+                return np.degrees(np.arctan2(dy, dx)) % 180
+
+        auto_angles = [get_orientation(line) for line in self.auto_lines]
+        manual_angles = [get_orientation(line) for line in self.manual_lines]
+
+        # Count orientations within threshold
+        matches = 0
+        for auto_angle in auto_angles:
+            for manual_angle in manual_angles:
+                angle_diff = min(
+                    abs(auto_angle - manual_angle),
+                    abs((auto_angle + 180) - manual_angle),
+                    abs(auto_angle - (manual_angle + 180))
+                )
+                if angle_diff <= angle_threshold:
+                    matches += 1
+
+        return matches / (len(auto_angles) * len(manual_angles)) if auto_angles and manual_angles else 0
+
+    def calculate_coverage(self, buffer_size):
+        """Calculate how well auto lines cover manual lines using buffers"""
+        from shapely.ops import unary_union
+
+        # Create buffers around manual lines
+        manual_buffers = unary_union([line.buffer(buffer_size) for line in self.manual_lines])
+        
+        # Calculate intersection with auto lines
+        auto_lines_union = unary_union(self.auto_lines)
+        intersection = auto_lines_union.intersection(manual_buffers)
+        
+        # Calculate coverage ratio
+        coverage = intersection.length / manual_buffers.length if manual_buffers.length > 0 else 0
+        return coverage
+
+    def show_results(self, results):
+        text = "Vector Analysis Results:\n\n"
+        text += f"Hausdorff Distance: {results['hausdorff']:.2f}\n"
+        text += f"Mean Distance: {results['mean_distance']:.2f}\n"
+        text += f"Length Ratio (Auto/Manual): {results['length_ratio']:.2f}\n"
+        text += f"Orientation Similarity: {results['orientation_similarity']:.2f}\n"
+        text += f"Coverage Ratio: {results['coverage']:.2f}\n"
+        
+        self.results_text.setText(text)
+
+    def plot_comparison(self, results):
+        self.figure.clear()
+        
+        # Create subplots for different visualizations
+        gs = self.figure.add_gridspec(2, 2)
+        
+        # Line overlay plot
+        ax1 = self.figure.add_subplot(gs[0, 0])
+        self.plot_line_overlay(ax1)
+        
+        # Rose diagram
+        ax2 = self.figure.add_subplot(gs[0, 1], projection='polar')
+        self.plot_rose_diagram(ax2)
+        
+        # Length distribution
+        ax3 = self.figure.add_subplot(gs[1, 0])
+        self.plot_length_distribution(ax3)
+        
+        # Coverage analysis
+        ax4 = self.figure.add_subplot(gs[1, 1])
+        self.plot_coverage_analysis(ax4, results['coverage'])
+        
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def plot_line_overlay(self, ax):
+        """Plot overlay of auto and manual lines"""
+        for line in self.auto_lines:
+            xs, ys = line.xy
+            ax.plot(xs, ys, 'b-', alpha=0.5, label='Auto' if line == self.auto_lines[0] else "")
+            
+        for line in self.manual_lines:
+            xs, ys = line.xy
+            ax.plot(xs, ys, 'r-', alpha=0.5, label='Manual' if line == self.manual_lines[0] else "")
+            
+        ax.legend()
+        ax.set_title("Line Overlay")
+        ax.set_aspect('equal')
+
+    def plot_rose_diagram(self, ax):
+        """Plot rose diagram of line orientations"""
+        def get_orientations(lines):
+            angles = []
+            for line in lines:
+                coords = np.array(line.coords)
+                dx = coords[-1][0] - coords[0][0]
+                dy = coords[-1][1] - coords[0][1]
+                angle = np.degrees(np.arctan2(dy, dx)) % 180
+                angles.append(np.radians(angle))
+            return angles
+
+        auto_angles = get_orientations(self.auto_lines)
+        manual_angles = get_orientations(self.manual_lines)
+
+        bins = np.linspace(0, np.pi, 18)  # 10-degree bins
+        ax.hist(auto_angles, bins=bins, alpha=0.5, color='blue', label='Auto')
+        ax.hist(manual_angles, bins=bins, alpha=0.5, color='red', label='Manual')
+        
+        ax.set_theta_zero_location('N')
+        ax.set_theta_direction(-1)
+        ax.set_title("Orientation Distribution")
+        ax.legend()
+
+    def plot_length_distribution(self, ax):
+        """Plot length distribution of lines"""
+        auto_lengths = [line.length for line in self.auto_lines]
+        manual_lengths = [line.length for line in self.manual_lines]
+
+        ax.hist(auto_lengths, bins=20, alpha=0.5, color='blue', label='Auto')
+        ax.hist(manual_lengths, bins=20, alpha=0.5, color='red', label='Manual')
+        
+        ax.set_xlabel("Length")
+        ax.set_ylabel("Frequency")
+        ax.set_title("Length Distribution")
+        ax.legend()
+
+    def plot_coverage_analysis(self, ax, coverage):
+        """Plot coverage analysis"""
+        ax.pie([coverage, 1-coverage], 
+               labels=['Covered', 'Uncovered'],
+               colors=['green', 'gray'],
+               autopct='%1.1f%%')
+        ax.set_title("Coverage Analysis")
 class ManualInterpretationHandler:
     def __init__(self):
         self.manual_mask = None
@@ -4741,6 +5050,7 @@ class MyWindow(QMainWindow):
         calculateStatsAction = QAction('Precision and Recall', self)
         calculateStatsAction.triggered.connect(self.show_statistics_dialog)
         calculateStatsMenu.addAction(calculateStatsAction)
+        calculateStatsMenu.addAction(QAction('Vector Metrics', self, triggered=self.show_vector_metrics))
 
         shearWaveletMenu = toolsMenu.addMenu('Shear Wavelet')
         edgeMeasurementAction = QAction('Edge Measurement', self)
@@ -4782,6 +5092,12 @@ class MyWindow(QMainWindow):
 
         helpMenu = menubar.addMenu('Help')
         helpMenu.addAction('About')
+
+
+    def show_vector_metrics(self):
+        dialog = VectorMetricsDialog(self)
+        dialog.exec_()
+
 
     def open_batch_process_dialog(self):
         dialog = BatchProcessDialog(self)
