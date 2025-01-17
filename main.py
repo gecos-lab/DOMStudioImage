@@ -1556,19 +1556,18 @@ class ManualInterpretationWindow(QDialog):
                 
                 gdf['geometry'] = gdf['geometry'].apply(pixel_to_coords)
             else:
-                # Fix: Use proper Affine transform with negative y scaling
+                # Modified Affine transform for non-georeferenced case
                 transform = rasterio.transform.Affine(
-                    1, 0, 0,      # x scaling, x shearing, x translation
-                    0, -1, height # y shearing, y scaling (negative), y translation at height
+                    1, 0, 0,        # x scaling, x shearing, x translation
+                    0, -1, height   # y shearing, y scaling (negative), y translation
                 )
 
-                
                 # Use simple projected CRS
                 crs = rasterio.crs.CRS.from_string("+proj=eqc +lat_ts=0 +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs")
                 used_crs = crs
                 gdf.set_crs(crs, inplace=True)
-                
-                # Create a georeferenced copy only if image doesn't have coordinates
+
+                # Create a georeferenced copy only if image doesn't have coordinates 
                 if parent_window and hasattr(parent_window, 'img'):
                     try:
                         geotiff_path, _ = QFileDialog.getSaveFileName(
@@ -1579,6 +1578,8 @@ class ManualInterpretationWindow(QDialog):
                         )
                         
                         if geotiff_path:
+                            # Flip image vertically before saving
+                            flipped_img = np.flipud(parent_window.img)
                             with rasterio.open(
                                 geotiff_path,
                                 'w',
@@ -1591,8 +1592,8 @@ class ManualInterpretationWindow(QDialog):
                                 transform=transform,
                                 nodata=0
                             ) as dst:
-                                dst.write(parent_window.img, 1)
-                                
+                                dst.write(flipped_img, 1)
+
                             QMessageBox.information(
                                 self,
                                 "Image Copy Created",
@@ -3262,134 +3263,101 @@ from coshrem.shearletsystem import RidgeSystem
 class ShearletFilterTab(FilterTab):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.shearlet_system = None  # Will hold RidgeSystem instance
-        self.setWindowTitle("Ridge (Shearlet-based)")
-        self.setup_controls()
+        self.shearlet_system = None
+        self.setWindowTitle("Ridge Detection")
+        # self.create_filter_controls()
 
-    def setup_controls(self):
-        # Minimum contrast slider
-        self.min_contrast = QSlider(Qt.Horizontal)
-        self.min_contrast.setRange(0, 100)
-        self.min_contrast.setValue(1)
-        self.min_contrast.valueChanged.connect(self.update_filter)
-        self.controls_layout.addWidget(QLabel("Min Contrast"))
-        self.controls_layout.addWidget(self.min_contrast)
+    def create_filter_controls(self):
+        # Add minimal controls for ridge detection
+        layout = QVBoxLayout()
 
-        # Threshold slider for ridgeness map
-        self.threshold_slider = QSlider(Qt.Horizontal)
-        self.threshold_slider.setRange(0, 255)
-        self.threshold_slider.setValue(10)  # Default threshold
-        self.threshold_slider.valueChanged.connect(self.update_filter)
-        self.controls_layout.addWidget(QLabel("Binary Threshold"))
-        self.controls_layout.addWidget(self.threshold_slider)
+        # Ridge contrast control
+        contrast_layout = QHBoxLayout()
+        self.contrast_slider = QSlider(Qt.Horizontal)
+        self.contrast_slider.setRange(1, 100)
+        self.contrast_slider.setValue(5)
+        self.contrast_slider.valueChanged.connect(self.update_filter)
+        
+        contrast_label = QLabel("Ridge Contrast:")
+        self.contrast_value = QLabel("5")
+        
+        contrast_layout.addWidget(contrast_label)
+        contrast_layout.addWidget(self.contrast_slider)
+        contrast_layout.addWidget(self.contrast_value)
+        layout.addLayout(contrast_layout)
 
-        # Minimum fracture size slider
-        self.min_size_slider = QSlider(Qt.Horizontal)
-        self.min_size_slider.setRange(1, 2000)
-        self.min_size_slider.setValue(500)
-        self.min_size_slider.valueChanged.connect(self.update_filter)
-        self.controls_layout.addWidget(QLabel("Min Fracture Size (px)"))
-        self.controls_layout.addWidget(self.min_size_slider)
+        # Scale mode selection
+        scale_layout = QHBoxLayout()
+        self.scale_combo = QComboBox()
+        self.scale_combo.addItems(['All Scales', 'Low Scale', 'High Scale'])
+        self.scale_combo.currentTextChanged.connect(self.update_filter)
+        
+        scale_label = QLabel("Scale Mode:")
+        scale_layout.addWidget(scale_label)
+        scale_layout.addWidget(self.scale_combo)
+        layout.addLayout(scale_layout)
 
-        # Pruning checkbox and slider
-        self.prune_checkbox = QCheckBox("Apply Pruning")
-        self.prune_checkbox.stateChanged.connect(self.update_filter)
-        self.controls_layout.addWidget(self.prune_checkbox)
-
-        self.prune_slider = QSlider(Qt.Horizontal)
-        self.prune_slider.setRange(1, 100)  # Adjust range as needed # higher value means 
-        self.prune_slider.setValue(10)  # Default minimum branch length
-        self.prune_slider.valueChanged.connect(self.update_filter)
-        self.controls_layout.addWidget(QLabel("Prune Branch Length"))
-        self.controls_layout.addWidget(self.prune_slider)
-
-    def set_input_image(self, image):
-        super().set_input_image(image)
-        # Create a RidgeSystem with similar parameters as the original image size
-        rows, cols = image.shape
-        self.shearlet_system = RidgeSystem(rows, cols)  # Use defaults or modify as needed
+        self.controls_layout.addLayout(layout)
 
     def apply_filter(self, image):
-        if self.shearlet_system is None:
-            self.filtered_image = image.copy()
-            return
+        """Apply shearlet filter to the input image"""
+        if image is None:
+            return None
 
-        # Get parameters
-        min_contrast_val = self.min_contrast.value()
-        binary_thresh = self.threshold_slider.value()
-        min_size = self.min_size_slider.value()
-        prune_length = self.prune_slider.value()
-        do_prune = self.prune_checkbox.isChecked()
+        try:
+            # Initialize shearlet system if not already done
+            if self.shearlet_system is None:
+                self.shearlet_system = RidgeSystem(
+                    image.shape[0], 
+                    image.shape[1],
+                    scales_per_octave=4,
+                    wavelet_eff_supp=60,
+                    gaussian_eff_supp=20,
+                    shear_level=3,
+                    alpha=0.2
+                )
 
-        # Detect ridges using RidgeSystem
-        ridgeness, orientations = self.shearlet_system.detect(
-            image,
-            min_contrast=min_contrast_val,
-            positive_only=False,
-            negative_only=False,
-            pivoting_scales='lowest'  # 'all', 'highest' can also be tried
-        )
+            # Get parameters
+            contrast = self.contrast_slider.value() / 5.0
+            self.contrast_value.setText(str(self.contrast_slider.value()))
+            scale_mode = self.scale_combo.currentText().lower().split()[0]
 
-        # Normalize ridgeness to 0-255
-        ridgeness_norm = cv2.normalize(ridgeness, None, 0, 255, cv2.NORM_MINMAX)
-        ridgeness_uint8 = ridgeness_norm.astype(np.uint8)
+            # Detect ridges
+            ridgeness, _ = self.shearlet_system.detect(
+                image,
+                min_contrast=contrast,
+                pivoting_scales=scale_mode,
+                positive_only=False,
+                negative_only=False
+            )
 
-        # Apply binary threshold
-        _, binary = cv2.threshold(ridgeness_uint8, binary_thresh, 255, cv2.THRESH_BINARY)
+            # Normalize to 0-255 range
+            ridgeness = cv2.normalize(
+                ridgeness, 
+                None, 
+                0, 
+                255, 
+                cv2.NORM_MINMAX, 
+                dtype=cv2.CV_8U
+            )
 
-        # Remove small objects that are not significant fractures
-        binary = self.remove_small_objects(binary, min_size=min_size)
+            # Apply threshold
+            _, binary = cv2.threshold(
+                ridgeness,
+                0,
+                255,
+                cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
 
-        if do_prune:
-            # Skeletonize
-            skeleton = skeletonize(binary > 0).astype(np.uint8) * 255
-            # Prune skeleton
-            skeleton_pruned = self.prune_skeleton(skeleton, min_branch_length=prune_length)
-            self.filtered_image = skeleton_pruned
-        else:
-            # No pruning, just show the binary result
             self.filtered_image = binary
+            return binary
 
-
-    def remove_small_objects(self, binary_image, min_size=500):
-        """
-        Remove small connected components from binary_image.
-        Components smaller than min_size pixels are removed.
-        """
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_image, 8, cv2.CV_32S)
-        output_mask = np.zeros_like(binary_image)
-        for i in range(1, num_labels):
-            area = stats[i, cv2.CC_STAT_AREA]
-            if area >= min_size:
-                output_mask[labels == i] = 255
-        return output_mask
-
-    def prune_skeleton(self, skeleton, min_branch_length=10):
-        """
-        Prune small skeleton components by removing any connected component 
-        smaller than 'min_branch_length' pixels.
-        """
-        # skeleton is assumed to be a binary image (0 or 255)
-        # Ensure binary format
-        _, sk_bin = cv2.threshold(skeleton, 127, 255, cv2.THRESH_BINARY)
-
-        # Label connected components
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(sk_bin, connectivity=8)
-
-        # Create output mask initialized to zeros
-        pruned = np.zeros_like(sk_bin, dtype=np.uint8)
-
-        for i in range(1, num_labels):
-            area = stats[i, cv2.CC_STAT_AREA]
-            # Keep only components that are at least min_branch_length pixels long
-            if area >= min_branch_length:
-                pruned[labels == i] = 255
-
-        return pruned
+        except Exception as e:
+            print(f"Error in ShearletFilterTab: {str(e)}")
+            return image.copy()
 
     def open_manual_interpretation(self):
         pass
-
 
 class RidgeEnsembleGenerator:
     """Class for generating ridge ensembles using DoG filter"""
@@ -3954,77 +3922,125 @@ class EdgeLinkWindow(QDialog):
 
 
 
-class VectorMetricsDialog(QDialog):
+class VectorMetricsWindow(QMainWindow):
+    """
+    A QMainWindow that allows loading two sets of lines (auto vs. manual),
+    computing metrics, and visualizing the results with multiple subplots.
+    """
+    from PyQt5.QtWidgets import QSplitter
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Vector-Based Metrics")
-        self.setGeometry(100, 100, 800, 600)
+        self.resize(1600, 900)
+
+        # Data containers
         self.auto_lines = []
         self.manual_lines = []
-        self.initUI()
 
-    def initUI(self):
-        layout = QVBoxLayout()
+        # Central widget (contains splitter)
+        central_widget = QWidget(self)
+        self.setCentralWidget(central_widget)
 
-        # File loading section
+        main_layout = QHBoxLayout(central_widget)
+
+        # Splitter to divide plotting area (left) and control/results (right)
+        from PyQt5.QtWidgets import QSplitter
+        splitter = QSplitter(Qt.Horizontal)
+        main_layout.addWidget(splitter)
+
+        # Left side: Plotting area
+        self.plot_widget = QWidget()
+        self.plot_layout = QVBoxLayout(self.plot_widget)
+        splitter.addWidget(self.plot_widget)
+
+        # Create main figure for all subplots
+        self.figure = Figure(figsize=(10, 8), constrained_layout=True)
+        self.canvas = FigureCanvas(self.figure)
+        self.plot_layout.addWidget(self.canvas)
+
+        # Right side: Controls and results
+        self.control_widget = QWidget()
+        self.control_layout = QVBoxLayout(self.control_widget)
+        splitter.addWidget(self.control_widget)
+
+        # 1. File Loading group
+        self.init_file_loading_ui()
+
+        # 2. Parameters group
+        self.init_parameters_ui()
+
+        # 3. Results text area
+        self.init_results_ui()
+
+        # 4. Analyze button
+        self.analyze_btn = QPushButton("Analyze")
+        self.analyze_btn.clicked.connect(self.analyze_vectors)
+        self.control_layout.addWidget(self.analyze_btn)
+
+        # Give a default stretch so the file/param layout is not too squeezed
+        splitter.setStretchFactor(0, 3)  # Plot area
+        splitter.setStretchFactor(1, 1)  # Control area
+
+    def init_file_loading_ui(self):
+        """Create UI group for file loading (auto vs manual lines)."""
         file_group = QGroupBox("Load Vector Files")
-        file_layout = QHBoxLayout()
+        file_layout = QVBoxLayout(file_group)
 
-        # Auto lines loading
-        auto_layout = QVBoxLayout()
-        self.auto_label = QLabel("Auto Lines: None")
+        # Auto lines row
+        auto_h_layout = QHBoxLayout()
+        self.auto_label = QLabel("Auto Lines: None loaded")
         auto_btn = QPushButton("Load Auto Lines")
         auto_btn.clicked.connect(self.load_auto_lines)
-        auto_layout.addWidget(self.auto_label)
-        auto_layout.addWidget(auto_btn)
-        file_layout.addLayout(auto_layout)
+        auto_h_layout.addWidget(self.auto_label)
+        auto_h_layout.addStretch()
+        auto_h_layout.addWidget(auto_btn)
 
-        # Manual lines loading
-        manual_layout = QVBoxLayout()
-        self.manual_label = QLabel("Manual Lines: None")
+        # Manual lines row
+        manual_h_layout = QHBoxLayout()
+        self.manual_label = QLabel("Manual Lines: None loaded")
         manual_btn = QPushButton("Load Manual Lines")
         manual_btn.clicked.connect(self.load_manual_lines)
-        manual_layout.addWidget(self.manual_label)
-        manual_layout.addWidget(manual_btn)
-        file_layout.addLayout(manual_layout)
+        manual_h_layout.addWidget(self.manual_label)
+        manual_h_layout.addStretch()
+        manual_h_layout.addWidget(manual_btn)
 
-        file_group.setLayout(file_layout)
-        layout.addWidget(file_group)
+        file_layout.addLayout(auto_h_layout)
+        file_layout.addLayout(manual_h_layout)
 
-        # Parameters section
+        self.control_layout.addWidget(file_group)
+
+    def init_parameters_ui(self):
+        """Create UI group for analysis parameters."""
         param_group = QGroupBox("Analysis Parameters")
-        param_layout = QFormLayout()
+        param_layout = QFormLayout(param_group)
 
+        # Buffer size (for coverage)
         self.buffer_size = QSpinBox()
-        self.buffer_size.setRange(1, 50)
+        self.buffer_size.setRange(1, 1000)
         self.buffer_size.setValue(5)
         param_layout.addRow("Buffer Size (px):", self.buffer_size)
 
+        # Angle threshold
         self.angle_threshold = QSpinBox()
-        self.angle_threshold.setRange(1, 90)
+        self.angle_threshold.setRange(1, 180)
         self.angle_threshold.setValue(15)
         param_layout.addRow("Angle Threshold (°):", self.angle_threshold)
 
         param_group.setLayout(param_layout)
-        layout.addWidget(param_group)
+        self.control_layout.addWidget(param_group)
 
-        # Results visualization
-        self.figure = Figure(figsize=(6, 4))
-        self.canvas = FigureCanvas(self.figure)
-        layout.addWidget(self.canvas)
+    def init_results_ui(self):
+        """Create text edit area to display metrics after analysis."""
+        results_group = QGroupBox("Analysis Results")
+        results_layout = QVBoxLayout(results_group)
 
-        # Results text area
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
-        layout.addWidget(self.results_text)
+        results_layout.addWidget(self.results_text)
 
-        # Analyze button
-        self.analyze_btn = QPushButton("Analyze")
-        self.analyze_btn.clicked.connect(self.analyze_vectors)
-        layout.addWidget(self.analyze_btn)
+        self.control_layout.addWidget(results_group)
 
-        self.setLayout(layout)
-
+    # -------------------- FILE LOADING --------------------
     def load_auto_lines(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load Auto Lines", "", "Shapefiles (*.shp);;All Files (*.*)"
@@ -4032,9 +4048,11 @@ class VectorMetricsDialog(QDialog):
         if file_path:
             try:
                 gdf = gpd.read_file(file_path)
-                self.auto_lines = [line for line in gdf.geometry]
+                # Filter valid line geometries only
+                self.auto_lines = [geom for geom in gdf.geometry 
+                                   if geom.is_valid and geom.geom_type in ["LineString", "MultiLineString"]]
                 self.auto_label.setText(f"Auto Lines: {len(self.auto_lines)} features")
-                self.update_plot()
+                self.update_main_plot()
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Failed to load auto lines: {str(e)}")
 
@@ -4045,33 +4063,50 @@ class VectorMetricsDialog(QDialog):
         if file_path:
             try:
                 gdf = gpd.read_file(file_path)
-                self.manual_lines = [line for line in gdf.geometry]
+                # Filter valid line geometries only
+                self.manual_lines = [geom for geom in gdf.geometry 
+                                     if geom.is_valid and geom.geom_type in ["LineString", "MultiLineString"]]
                 self.manual_label.setText(f"Manual Lines: {len(self.manual_lines)} features")
-                self.update_plot()
+                self.update_main_plot()
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Failed to load manual lines: {str(e)}")
 
-    def update_plot(self):
+    def update_main_plot(self):
+        """
+        Update the main figure (simple overlay of auto vs manual lines).
+        """
         self.figure.clear()
         ax = self.figure.add_subplot(111)
+        ax.set_title("Line Overlay (Auto: Blue, Manual: Red)")
 
         # Plot auto lines in blue
-        if self.auto_lines:
-            for line in self.auto_lines:
+        for line in self.auto_lines:
+            if line.geom_type == "LineString":
                 xs, ys = line.xy
-                ax.plot(xs, ys, 'b-', alpha=0.5, label='Auto')
+                ax.plot(xs, ys, 'b-', alpha=0.7)
+            else:  # MultiLineString
+                for part in line.geoms:
+                    xs, ys = part.xy
+                    ax.plot(xs, ys, 'b-', alpha=0.7)
 
         # Plot manual lines in red
-        if self.manual_lines:
-            for line in self.manual_lines:
+        for line in self.manual_lines:
+            if line.geom_type == "LineString":
                 xs, ys = line.xy
-                ax.plot(xs, ys, 'r-', alpha=0.5, label='Manual')
+                ax.plot(xs, ys, 'r-', alpha=0.7)
+            else:  # MultiLineString
+                for part in line.geoms:
+                    xs, ys = part.xy
+                    ax.plot(xs, ys, 'r-', alpha=0.7)
 
-        ax.legend()
-        ax.set_aspect('equal')
+        ax.set_aspect('equal', 'box')
         self.canvas.draw()
 
+    # -------------------- ANALYSIS --------------------
     def analyze_vectors(self):
+        """
+        Perform a suite of vector analyses between auto_lines and manual_lines.
+        """
         if not self.auto_lines or not self.manual_lines:
             QMessageBox.warning(self, "Error", "Please load both auto and manual lines first.")
             return
@@ -4082,181 +4117,291 @@ class VectorMetricsDialog(QDialog):
 
             # Calculate metrics
             results = {
-                'hausdorff': self.calculate_hausdorff(),
+                'hausdorff': self.calculate_hausdorff_distance(),
                 'mean_distance': self.calculate_mean_distance(),
+                'max_distance': self.calculate_max_distance(),
                 'length_ratio': self.calculate_length_ratio(),
                 'orientation_similarity': self.calculate_orientation_similarity(angle_threshold),
                 'coverage': self.calculate_coverage(buffer_size)
             }
 
-            # Update results text
             self.show_results(results)
-            
-            # Update plot with comparison visualization
             self.plot_comparison(results)
-
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Analysis failed: {str(e)}")
 
-    def calculate_hausdorff(self):
-        """Calculate Hausdorff distance between auto and manual line sets"""
+    # ------------------ METRIC CALCULATIONS ------------------
+    def calculate_hausdorff_distance(self):
+        """
+        Approximate Hausdorff distance by taking each auto line, computing the distance
+        to the closest manual line, and tracking the maximum of those minimal distances.
+        """
         max_dist = 0
         for auto_line in self.auto_lines:
-            min_dist = float('inf')
+            if not auto_line.is_valid:
+                continue
+            nearest_dist = float('inf')
             for manual_line in self.manual_lines:
-                dist = auto_line.hausdorff_distance(manual_line)
-                min_dist = min(min_dist, dist)
-            max_dist = max(max_dist, min_dist)
+                if not manual_line.is_valid:
+                    continue
+                try:
+                    d = auto_line.hausdorff_distance(manual_line)
+                    if d < nearest_dist:
+                        nearest_dist = d
+                except Exception:
+                    pass
+            if nearest_dist < float('inf') and nearest_dist > max_dist:
+                max_dist = nearest_dist
         return max_dist
 
     def calculate_mean_distance(self):
-        """Calculate mean perpendicular distance between line sets"""
+        """
+        For each auto line, find the distance to the closest manual line,
+        then compute the average of those minimal distances.
+        """
         distances = []
         for auto_line in self.auto_lines:
+            if not auto_line.is_valid:
+                continue
+            nearest_dist = float('inf')
             for manual_line in self.manual_lines:
-                distances.append(auto_line.distance(manual_line))
-        return np.mean(distances) if distances else 0
+                if not manual_line.is_valid:
+                    continue
+                try:
+                    d = auto_line.distance(manual_line)
+                    if d < nearest_dist:
+                        nearest_dist = d
+                except Exception:
+                    pass
+            if nearest_dist < float('inf'):
+                distances.append(nearest_dist)
+        return float(np.mean(distances)) if distances else 0
+
+    def calculate_max_distance(self):
+        """
+        For each auto line, find the distance to the closest manual line,
+        then take the maximum among those distances. 
+        """
+        max_d = 0
+        for auto_line in self.auto_lines:
+            if not auto_line.is_valid:
+                continue
+            nearest_dist = float('inf')
+            for manual_line in self.manual_lines:
+                if not manual_line.is_valid:
+                    continue
+                try:
+                    d = auto_line.distance(manual_line)
+                    if d < nearest_dist:
+                        nearest_dist = d
+                except Exception:
+                    pass
+            if nearest_dist < float('inf') and nearest_dist > max_d:
+                max_d = nearest_dist
+        return max_d
 
     def calculate_length_ratio(self):
-        """Calculate ratio of total lengths between auto and manual lines"""
-        auto_length = sum(line.length for line in self.auto_lines)
-        manual_length = sum(line.length for line in self.manual_lines)
-        return auto_length / manual_length if manual_length > 0 else 0
+        """Ratio of total lengths (Auto / Manual)."""
+        auto_length = sum(l.length for l in self.auto_lines)
+        manual_length = sum(l.length for l in self.manual_lines)
+        if manual_length == 0:
+            return 0
+        return auto_length / manual_length
 
     def calculate_orientation_similarity(self, angle_threshold):
-        """Calculate similarity in orientation distributions"""
-        def get_orientation(line):
-            if isinstance(line, LineString):
+        """
+        Calculate orientation similarity:
+        - Extract a principal angle for each line (0-180).
+        - For each auto angle, count if there's a manual angle within angle_threshold.
+        - similarity = (# matches) / (#auto * #manual).
+        """
+        def get_line_angle(line):
+            if line.geom_type == "LineString":
                 coords = np.array(line.coords)
-                dx = coords[-1][0] - coords[0][0]
-                dy = coords[-1][1] - coords[0][1]
-                return np.degrees(np.arctan2(dy, dx)) % 180
-
-        auto_angles = [get_orientation(line) for line in self.auto_lines]
-        manual_angles = [get_orientation(line) for line in self.manual_lines]
-
-        # Count orientations within threshold
-        matches = 0
-        for auto_angle in auto_angles:
-            for manual_angle in manual_angles:
-                angle_diff = min(
-                    abs(auto_angle - manual_angle),
-                    abs((auto_angle + 180) - manual_angle),
-                    abs(auto_angle - (manual_angle + 180))
-                )
-                if angle_diff <= angle_threshold:
-                    matches += 1
-
-        return matches / (len(auto_angles) * len(manual_angles)) if auto_angles and manual_angles else 0
-
-    def calculate_coverage(self, buffer_size):
-        """Calculate how well auto lines cover manual lines using buffers"""
-        from shapely.ops import unary_union
-
-        # Create buffers around manual lines
-        manual_buffers = unary_union([line.buffer(buffer_size) for line in self.manual_lines])
-        
-        # Calculate intersection with auto lines
-        auto_lines_union = unary_union(self.auto_lines)
-        intersection = auto_lines_union.intersection(manual_buffers)
-        
-        # Calculate coverage ratio
-        coverage = intersection.length / manual_buffers.length if manual_buffers.length > 0 else 0
-        return coverage
-
-    def show_results(self, results):
-        text = "Vector Analysis Results:\n\n"
-        text += f"Hausdorff Distance: {results['hausdorff']:.2f}\n"
-        text += f"Mean Distance: {results['mean_distance']:.2f}\n"
-        text += f"Length Ratio (Auto/Manual): {results['length_ratio']:.2f}\n"
-        text += f"Orientation Similarity: {results['orientation_similarity']:.2f}\n"
-        text += f"Coverage Ratio: {results['coverage']:.2f}\n"
-        
-        self.results_text.setText(text)
-
-    def plot_comparison(self, results):
-        self.figure.clear()
-        
-        # Create subplots for different visualizations
-        gs = self.figure.add_gridspec(2, 2)
-        
-        # Line overlay plot
-        ax1 = self.figure.add_subplot(gs[0, 0])
-        self.plot_line_overlay(ax1)
-        
-        # Rose diagram
-        ax2 = self.figure.add_subplot(gs[0, 1], projection='polar')
-        self.plot_rose_diagram(ax2)
-        
-        # Length distribution
-        ax3 = self.figure.add_subplot(gs[1, 0])
-        self.plot_length_distribution(ax3)
-        
-        # Coverage analysis
-        ax4 = self.figure.add_subplot(gs[1, 1])
-        self.plot_coverage_analysis(ax4, results['coverage'])
-        
-        self.figure.tight_layout()
-        self.canvas.draw()
-
-    def plot_line_overlay(self, ax):
-        """Plot overlay of auto and manual lines"""
-        for line in self.auto_lines:
-            xs, ys = line.xy
-            ax.plot(xs, ys, 'b-', alpha=0.5, label='Auto' if line == self.auto_lines[0] else "")
-            
-        for line in self.manual_lines:
-            xs, ys = line.xy
-            ax.plot(xs, ys, 'r-', alpha=0.5, label='Manual' if line == self.manual_lines[0] else "")
-            
-        ax.legend()
-        ax.set_title("Line Overlay")
-        ax.set_aspect('equal')
-
-    def plot_rose_diagram(self, ax):
-        """Plot rose diagram of line orientations"""
-        def get_orientations(lines):
-            angles = []
-            for line in lines:
-                coords = np.array(line.coords)
+                if len(coords) < 2:
+                    return None
                 dx = coords[-1][0] - coords[0][0]
                 dy = coords[-1][1] - coords[0][1]
                 angle = np.degrees(np.arctan2(dy, dx)) % 180
-                angles.append(np.radians(angle))
-            return angles
+                return angle
+            else:
+                # For MultiLineString, just take angle of longest part
+                longest_part = max(line.geoms, key=lambda g: g.length)
+                return get_line_angle(longest_part)
 
-        auto_angles = get_orientations(self.auto_lines)
-        manual_angles = get_orientations(self.manual_lines)
+        auto_angles = [a for l in self.auto_lines if (a := get_line_angle(l)) is not None]
+        manual_angles = [a for l in self.manual_lines if (a := get_line_angle(l)) is not None]
 
-        bins = np.linspace(0, np.pi, 18)  # 10-degree bins
-        ax.hist(auto_angles, bins=bins, alpha=0.5, color='blue', label='Auto')
-        ax.hist(manual_angles, bins=bins, alpha=0.5, color='red', label='Manual')
-        
+        if not auto_angles or not manual_angles:
+            return 0
+
+        matches = 0
+        total_pairs = len(auto_angles) * len(manual_angles)
+
+        for a_ang in auto_angles:
+            for m_ang in manual_angles:
+                diff1 = abs(a_ang - m_ang)
+                diff2 = abs((a_ang + 180) - m_ang)
+                diff3 = abs(a_ang - (m_ang + 180))
+                angle_diff = min(diff1, diff2, diff3)
+                if angle_diff <= angle_threshold:
+                    matches += 1
+
+        return matches / total_pairs if total_pairs else 0
+
+    def calculate_coverage(self, buffer_size):
+        """
+        Coverage ratio:
+         - Buffer auto lines by 'buffer_size'.
+         - Compute how much of the manual lines' total length is within that buffer.
+         coverage = (length of manual lines within auto-buffer) / (total manual line length).
+        """
+        from shapely.ops import unary_union
+        if not self.auto_lines or not self.manual_lines:
+            return 0
+        auto_union = unary_union([l.buffer(buffer_size) for l in self.auto_lines])
+        if auto_union.is_empty:
+            return 0
+        total_manual_length = sum(l.length for l in self.manual_lines)
+        if total_manual_length == 0:
+            return 0
+
+        covered_length = 0.0
+        for manual_line in self.manual_lines:
+            intersected = manual_line.intersection(auto_union)
+            covered_length += intersected.length
+
+        return covered_length / total_manual_length
+
+    # ------------------ RESULTS + PLOTS ------------------
+    def show_results(self, results):
+        """
+        Show numeric results in the text area.
+        """
+        text = "Vector Analysis Results:\n\n"
+        text += f"Hausdorff (approx):    {results['hausdorff']:.3f}\n"
+        text += f"Mean Distance:         {results['mean_distance']:.3f}\n"
+        text += f"Max Distance:          {results['max_distance']:.3f}\n"
+        text += f"Length Ratio:          {results['length_ratio']:.3f}\n"
+        text += f"Orientation Similarity:{results['orientation_similarity']:.3f}\n"
+        text += f"Coverage Ratio:        {results['coverage']:.3f}\n"
+        self.results_text.setText(text)
+
+    def plot_comparison(self, results):
+        """
+        Produce a 2x2 grid of subplots:
+         1. Overlay
+         2. Orientation distribution
+         3. Length distribution
+         4. Coverage pie chart
+        """
+        self.figure.clear()
+        gs = self.figure.add_gridspec(2, 2)
+
+        # (1) Overlay
+        ax1 = self.figure.add_subplot(gs[0, 0])
+        ax1.set_title("Line Overlay")
+        self.draw_overlay(ax1)
+
+        # (2) Orientation distribution
+        ax2 = self.figure.add_subplot(gs[0, 1], polar=True)
+        self.draw_orientation_distribution(ax2)
+
+        # (3) Length distribution
+        ax3 = self.figure.add_subplot(gs[1, 0])
+        self.draw_length_distribution(ax3)
+
+        # (4) Coverage / summary
+        ax4 = self.figure.add_subplot(gs[1, 1])
+        self.draw_coverage(ax4, results['coverage'])
+
+        self.canvas.draw()
+
+    def draw_overlay(self, ax):
+        """Simple overlay of auto (blue) and manual (red)."""
+        for line in self.auto_lines:
+            if line.geom_type == "LineString":
+                xs, ys = line.xy
+                ax.plot(xs, ys, 'b-', alpha=0.7)
+            else:
+                for part in line.geoms:
+                    xs, ys = part.xy
+                    ax.plot(xs, ys, 'b-', alpha=0.7)
+
+        for line in self.manual_lines:
+            if line.geom_type == "LineString":
+                xs, ys = line.xy
+                ax.plot(xs, ys, 'r-', alpha=0.7)
+            else:
+                for part in line.geoms:
+                    xs, ys = part.xy
+                    ax.plot(xs, ys, 'r-', alpha=0.7)
+
+        ax.set_aspect('equal', 'box')
+
+    def draw_orientation_distribution(self, ax):
+        """Rose diagram of line orientations (0 to 180 deg)."""
+        def get_line_angle(line):
+            if line.geom_type == "LineString":
+                coords = np.array(line.coords)
+                if len(coords) < 2:
+                    return None
+                dx = coords[-1][0] - coords[0][0]
+                dy = coords[-1][1] - coords[0][1]
+                angle = np.degrees(np.arctan2(dy, dx)) % 180
+                return np.radians(angle)
+            else:
+                longest_part = max(line.geoms, key=lambda g: g.length)
+                return get_line_angle(longest_part)
+
+        auto_angles = [ang for l in self.auto_lines if (ang := get_line_angle(l)) is not None]
+        manual_angles = [ang for l in self.manual_lines if (ang := get_line_angle(l)) is not None]
+
+        bins = np.linspace(0, np.pi, 18)  # e.g., 10-degree bins from 0..180 deg
+
+        ax.hist(auto_angles, bins=bins, alpha=0.5, label='Auto', color='blue')
+        ax.hist(manual_angles, bins=bins, alpha=0.5, label='Manual', color='red')
+
         ax.set_theta_zero_location('N')
         ax.set_theta_direction(-1)
         ax.set_title("Orientation Distribution")
-        ax.legend()
+        ax.legend(loc='upper right')
 
-    def plot_length_distribution(self, ax):
-        """Plot length distribution of lines"""
-        auto_lengths = [line.length for line in self.auto_lines]
-        manual_lengths = [line.length for line in self.manual_lines]
+    def draw_length_distribution(self, ax):
+        """Histogram of line lengths for auto vs manual."""
+        auto_lengths = []
+        for line in self.auto_lines:
+            if line.geom_type == 'LineString':
+                auto_lengths.append(line.length)
+            else:  # MultiLineString
+                for part in line.geoms:
+                    auto_lengths.append(part.length)
+
+        manual_lengths = []
+        for line in self.manual_lines:
+            if line.geom_type == 'LineString':
+                manual_lengths.append(line.length)
+            else:
+                for part in line.geoms:
+                    manual_lengths.append(part.length)
 
         ax.hist(auto_lengths, bins=20, alpha=0.5, color='blue', label='Auto')
         ax.hist(manual_lengths, bins=20, alpha=0.5, color='red', label='Manual')
-        
-        ax.set_xlabel("Length")
+        ax.set_xlabel("Line Length")
         ax.set_ylabel("Frequency")
         ax.set_title("Length Distribution")
         ax.legend()
 
-    def plot_coverage_analysis(self, ax, coverage):
-        """Plot coverage analysis"""
-        ax.pie([coverage, 1-coverage], 
-               labels=['Covered', 'Uncovered'],
-               colors=['green', 'gray'],
-               autopct='%1.1f%%')
-        ax.set_title("Coverage Analysis")
+    def draw_coverage(self, ax, coverage):
+        """Pie chart for coverage ratio."""
+        ax.pie(
+            [coverage, 1 - coverage],
+            labels=[f"Covered\n({coverage:.2f})", f"Uncovered\n({1-coverage:.2f})"],
+            colors=['green', 'gray'],
+            autopct='%1.1f%%'
+        )
+        ax.set_title("Coverage Ratio")
+
 class ManualInterpretationHandler:
     def __init__(self):
         self.manual_mask = None
@@ -4614,7 +4759,7 @@ class ExportDialog(QDialog):
         layout = QVBoxLayout()
 
         self.filter_combo = QComboBox()
-        self.filter_combo.addItems(["Original", "Canny", "Sobel", "Shearlet"])
+        self.filter_combo.addItems(["Original", "Canny", "Sobel", "Shearlet", "Laplacian", "HED", "Frangi", "Roberts"])
         layout.addWidget(QLabel("Select Filter:"))
         layout.addWidget(self.filter_combo)
 
@@ -5095,8 +5240,9 @@ class MyWindow(QMainWindow):
 
 
     def show_vector_metrics(self):
-        dialog = VectorMetricsDialog(self)
-        dialog.exec_()
+        # show vector metrics window
+        window = VectorMetricsWindow(self)
+        window.show()
 
 
     def open_batch_process_dialog(self):
