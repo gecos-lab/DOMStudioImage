@@ -547,22 +547,20 @@ class LineItem(QGraphicsPathItem):
             self.bezier_points.append((ctrl1, ctrl2))
 
     def updatePath(self):
-        """Update path using Bezier curves between control points"""
-        if len(self.nodes) < 2:
+        """Update path using the stored points"""
+        if len(self.path_points) < 2:
             return
             
-        self.updateControlPoints()
-        
         path = QPainterPath()
-        path.moveTo(self.nodes[0].pos())
-
-        for i in range(len(self.nodes) - 1):
-            p1 = self.nodes[i].pos()
-            p2 = self.nodes[i+1].pos()
-            ctrl1, ctrl2 = self.bezier_points[i]
-            
-            path.cubicTo(ctrl1, ctrl2, p2)
-
+        
+        # Start path at first point
+        first_point = self.path_points[0]
+        path.moveTo(first_point[0], first_point[1])
+        
+        # Add remaining points
+        for point in self.path_points[1:]:
+            path.lineTo(point[0], point[1])
+        
         self.setPath(path)
 
     def updateSimplePath(self):
@@ -1155,8 +1153,6 @@ class ManualInterpretationWindow(QDialog):
         self.is_semi_auto = False
         self.is_edit_mode = False
         self.semi_auto_start_point = None
-
-        
         # Initialize eraser properties
         self.is_eraser_mode = False
         self.eraser_size = 10
@@ -1197,7 +1193,11 @@ class ManualInterpretationWindow(QDialog):
 
         # Control Buttons Layout
         button_layout = QHBoxLayout()
-
+        # Add load shapefile button to button_layout
+        self.load_shapefile_button = QPushButton("Load Shapefile")
+        self.load_shapefile_button.clicked.connect(self.load_shapefile)
+        button_layout.addWidget(self.load_shapefile_button)
+        
         # Existing buttons
         self.toggle_drawing_button = QPushButton("Enable Manual Drawing")
         self.toggle_drawing_button.setCheckable(True)
@@ -1332,7 +1332,67 @@ class ManualInterpretationWindow(QDialog):
         self.view.viewport().setMouseTracking(True)
  
     # Add these new methods
+    def load_shapefile(self):
+        """Load and display vector shapefile"""
+        try:
+            shapefile_path, _ = QFileDialog.getOpenFileName(
+                self, "Select Shapefile", "", "Shapefiles (*.shp);;All Files (*.*)"
+            )
+            
+            if not shapefile_path:
+                return
 
+            # Read shapefile
+            gdf = gpd.read_file(shapefile_path)
+            if gdf.empty:
+                QMessageBox.warning(self, "Error", "Shapefile appears to be empty")
+                return
+
+            height, width = self.original_image.shape[:2]
+            
+            # Always use basic scaling as fallback
+            bounds = gdf.total_bounds
+            x_scale = width / (bounds[2] - bounds[0])
+            y_scale = height / (bounds[3] - bounds[1])
+            
+            def scale_coords(geom):
+                if geom.geom_type == 'LineString':
+                    coords = []
+                    for x, y in geom.coords:
+                        # Scale coordinates to image dimensions
+                        px = (x - bounds[0]) * x_scale
+                        py = height - (y - bounds[1]) * y_scale  # Flip y-coordinate
+                        coords.append((px, py))
+                    return coords
+                return []
+
+            # Create lines
+            for geom in gdf.geometry:
+                points = scale_coords(geom)
+                if len(points) >= 2:
+                    line = LineItem()
+                    line.setZValue(1)
+                    # Make lines more visible
+                    pen = QPen(QColor('red'), 2)  # Increased width to 2
+                    pen.setStyle(Qt.SolidLine)
+                    line.setPen(pen)
+                    
+                    # Add points to line
+                    line.path_points = [(int(x), int(y)) for x, y in points]
+                    line.updatePath()
+                    
+                    # Add line to scene and list
+                    self.scene.addItem(line)
+                    self.lines.append(line)
+
+            self.scene.update()
+            QMessageBox.information(self, "Success", 
+                f"Loaded {len(gdf)} features from shapefile")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load shapefile: {str(e)}")
+            print(f"Error loading shapefile: {str(e)}")
+            traceback.print_exc()
     def toggle_eraser(self, checked):
         """Toggle eraser mode"""
         print("Eraser toggled:", checked)
