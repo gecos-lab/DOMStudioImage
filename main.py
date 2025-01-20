@@ -3275,11 +3275,11 @@ class ShearletFilterTab(FilterTab):
         contrast_layout = QHBoxLayout()
         self.contrast_slider = QSlider(Qt.Horizontal)
         self.contrast_slider.setRange(1, 100)
-        self.contrast_slider.setValue(5)
+        self.contrast_slider.setValue(10)
         self.contrast_slider.valueChanged.connect(self.update_filter)
         
         contrast_label = QLabel("Ridge Contrast:")
-        self.contrast_value = QLabel("5")
+        self.contrast_value = QLabel("10")
         
         contrast_layout.addWidget(contrast_label)
         contrast_layout.addWidget(self.contrast_slider)
@@ -3310,7 +3310,7 @@ class ShearletFilterTab(FilterTab):
                 self.shearlet_system = RidgeSystem(
                     image.shape[0], 
                     image.shape[1],
-                    scales_per_octave=4,
+                    scales_per_octave=4, 
                     wavelet_eff_supp=60,
                     gaussian_eff_supp=20,
                     shear_level=3,
@@ -3326,7 +3326,7 @@ class ShearletFilterTab(FilterTab):
             ridgeness, _ = self.shearlet_system.detect(
                 image,
                 min_contrast=contrast,
-                pivoting_scales=scale_mode,
+                pivoting_scales=scale_mode, 
                 positive_only=False,
                 negative_only=False
             )
@@ -4484,10 +4484,20 @@ class PrecisionRecallDialog(QDialog):
         
         layout = QVBoxLayout()
         
+        # Button layout
+        button_layout = QHBoxLayout()
+        
         # Add button to load manual interpretation
         self.load_button = QPushButton("Load Manual Interpretation")
         self.load_button.clicked.connect(self.load_manual_interpretation)
-        layout.addWidget(self.load_button)
+        button_layout.addWidget(self.load_button)
+        
+        # Add save results button
+        self.save_button = QPushButton("Save Results")
+        self.save_button.clicked.connect(self.save_results)
+        button_layout.addWidget(self.save_button)
+        
+        layout.addLayout(button_layout)
         
 
         # Create the plot
@@ -4503,6 +4513,69 @@ class PrecisionRecallDialog(QDialog):
         self.setLayout(layout)
 
         self.plot_data(filter_data)
+
+    def save_results(self):
+        # Ask user for save location
+        save_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Save Results")
+        if not save_dir:
+            return
+            
+        try:
+            # Save plot as PNG
+            plot_path = os.path.join(save_dir, "precision_recall_plot.png")
+            self.figure.savefig(plot_path, dpi=300, bbox_inches='tight')
+            
+            # Create and save CSV
+            csv_path = os.path.join(save_dir, "precision_recall_metrics.csv")
+            self.save_metrics_to_csv(csv_path)
+            
+            QMessageBox.information(self, "Success", 
+                f"Results saved successfully!\nPlot: {plot_path}\nMetrics: {csv_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to save results: {str(e)}")
+
+    def save_metrics_to_csv(self, filepath):
+        import pandas as pd
+        
+        # Prepare data for DataFrame
+        data = []
+        for filter_name, filter_data in self.filter_data.items():
+            row = {
+                'Filter': filter_name,
+                'Precision': f"{filter_data['precision']:.4f}",
+                'Recall': f"{filter_data['recall']:.4f}"
+            }
+            
+            # Add filter-specific parameters
+            if 'threshold1' in filter_data:
+                row.update({'Threshold1': filter_data['threshold1'],
+                          'Threshold2': filter_data['threshold2']})
+            if 'ksize' in filter_data:
+                row['Kernel Size'] = filter_data['ksize']
+            if 'contrast' in filter_data:
+                row.update({'Contrast': filter_data['contrast'],
+                          'Scale Mode': filter_data['scale_mode']})
+            if 'laplacian_ksize' in filter_data:
+                row['Laplacian Kernel Size'] = filter_data['laplacian_ksize']
+            if 'model' in filter_data:
+                row.update({'Model': filter_data['model'],
+                          'Side Output': filter_data['side_output'],
+                          'Threshold': filter_data['threshold']})
+            if 'scale_min' in filter_data:
+                row.update({
+                    'Scale Min': filter_data['scale_min'],
+                    'Scale Max': filter_data['scale_max'],
+                    'Scale Step': filter_data['scale_step'],
+                    'Alpha': f"{filter_data['alpha']:.1f}",
+                    'Beta': f"{filter_data['beta']:.1f}",
+                    'Gamma': filter_data['gamma']
+                })
+            
+            data.append(row)
+        
+        # Create and save DataFrame
+        df = pd.DataFrame(data)
+        df.to_csv(filepath, index=False)
     def load_manual_interpretation(self):
         filepath, _ = QFileDialog.getOpenFileName(
             self,
@@ -5353,9 +5426,8 @@ class MyWindow(QMainWindow):
                         filter_data[filter_name]['ksize'] = tab.ksize.value()
                     elif isinstance(tab, ShearletFilterTab):
                         filter_data[filter_name].update({
-                            'min_contrast': tab.min_contrast.value(),
-                            'binary_threshold': tab.threshold_slider.value(),
-                            'min_size': tab.min_size_slider.value()
+                            'contrast': tab.contrast_slider.value() / 20.0,
+                            'scale_mode': tab.scale_combo.currentText()
                         })
                     elif isinstance(tab, LaplacianFilterTab):
                         filter_data[filter_name]['laplacian_ksize'] = tab.laplacian_kernel_size
