@@ -4022,7 +4022,12 @@ class VectorMetricsWindow(QMainWindow):
         self.control_widget = QWidget()
         self.control_layout = QVBoxLayout(self.control_widget)
         splitter.addWidget(self.control_widget)
-
+        # Add Save Results button
+        self.save_btn = QPushButton("Save Results")
+        self.save_btn.clicked.connect(self.save_results)
+        self.save_btn.setEnabled(False)  # Enable only after analysis
+        self.control_layout.addWidget(self.save_btn)
+    
         # 1. File Loading group
         self.init_file_loading_ui()
 
@@ -4115,6 +4120,51 @@ class VectorMetricsWindow(QMainWindow):
                 self.update_main_plot()
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Failed to load auto lines: {str(e)}")
+    def save_results(self):
+        """Save both plot and metrics data"""
+        try:
+            # Save plot
+            plot_path, _ = QFileDialog.getSaveFileName(
+                self, "Save Plot", "", "PNG Files (*.png)"
+            )
+            if plot_path:
+                if not plot_path.endswith('.png'):
+                    plot_path += '.png'
+                self.figure.savefig(plot_path, dpi=300, bbox_inches='tight')
+
+            # Save metrics
+            csv_path, _ = QFileDialog.getSaveFileName(
+                self, "Save Metrics", "", "CSV Files (*.csv)"
+            )
+            if csv_path:
+                if not csv_path.endswith('.csv'):
+                    csv_path += '.csv'
+                self.save_metrics_to_csv(csv_path)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to save results: {str(e)}")
+    def save_metrics_to_csv(self, filepath):
+        """Save current metrics to CSV file"""
+        import csv
+        
+        # Get current results
+        results = {
+            'hausdorff': self.calculate_hausdorff_distance(),
+            'mean_distance': self.calculate_mean_distance(),
+            'max_distance': self.calculate_max_distance(),
+            'length_ratio': self.calculate_length_ratio(),
+            'orientation_similarity': self.calculate_orientation_similarity(
+                self.angle_threshold.value()
+            ),
+            'coverage': self.calculate_coverage(self.buffer_size.value())
+        }
+        
+        # Write to CSV
+        with open(filepath, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Metric', 'Value'])
+            for key, value in results.items():
+                writer.writerow([key, f"{value:.3f}"])
 
     def load_manual_lines(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -4187,6 +4237,7 @@ class VectorMetricsWindow(QMainWindow):
 
             self.show_results(results)
             self.plot_comparison(results)
+            self.save_btn.setEnabled(True)  # Enable save button after analysis
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Analysis failed: {str(e)}")
 
