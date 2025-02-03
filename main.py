@@ -67,7 +67,19 @@ from skimage import exposure
 from skimage.util import img_as_float, img_as_ubyte
 import scipy 
 from utility import edgelink, seglist  # Add seglist to import
+from line_cleaning import (
+    snap_line_endpoints, buffer_and_merge_lines, lines_to_graph,
+    remove_short_edges, resolve_artificial_fragmentation,
+    merge_lines_by_angle, merge_connected_edges, simplify_lines, graph_to_lines
+)
+from PyQt5.QtWidgets import (QDoubleSpinBox, QSpinBox, QCheckBox, QGroupBox, 
+                            QFormLayout)
+from shapely.geometry import Polygon, LineString
+from centerline.geometry import Centerline
+import geopandas as gpd
 
+from shapely.geometry import Polygon, LineString, MultiLineString
+from shapely.ops import unary_union, linemerge
 class PreprocessingWindow(QDialog):
     def __init__(self, image, parent=None):
         super().__init__(parent)
@@ -454,7 +466,8 @@ class LineItem(QGraphicsPathItem):
         pen.setJoinStyle(Qt.RoundJoin)
         self.setPen(pen)
         
-        self.setFlags(QGraphicsItem.ItemIsSelectable)
+        self.setFlag(QGraphicsItem.ItemIsSelectable)
+        self.setFlag(QGraphicsItem.ItemIsMovable)
         self.setAcceptHoverEvents(True)
         self.setZValue(1)
 
@@ -1131,8 +1144,185 @@ class FilterTab(QWidget):
     def apply_filter(self, image):
         # To be implemented in subclasses
         pass
+class CenterlineDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Centerline Extraction Parameters")
+        self.initUI()
 
+    def initUI(self):
+        layout = QVBoxLayout()
 
+        # Parameters group
+        params_group = QGroupBox("Parameters")
+        params_layout = QFormLayout()
+
+        # Buffer distance
+        self.buffer_distance = QDoubleSpinBox()
+        self.buffer_distance.setRange(0.1, 100.0)
+        self.buffer_distance.setValue(2.0)
+        self.buffer_distance.setSingleStep(0.5)
+        params_layout.addRow("Buffer Distance (m):", self.buffer_distance)
+
+        # Interpolation spacing
+        self.interpolation = QSpinBox()
+        self.interpolation.setRange(1, 10)
+        self.interpolation.setValue(2)
+        params_layout.addRow("Interpolation Spacing:", self.interpolation)
+
+        # Merge polygons option
+        self.merge_polygons = QCheckBox("Merge Buffered Polygons")
+        self.merge_polygons.setChecked(False)
+        params_layout.addRow("", self.merge_polygons)
+
+        # Add simplification options
+        self.do_simplify = QCheckBox("Simplify Centerlines")
+        self.do_simplify.setChecked(True)
+        params_layout.addRow("", self.do_simplify)
+
+        self.simplify_tolerance = QDoubleSpinBox()
+        self.simplify_tolerance.setRange(0.1, 50.0)
+        self.simplify_tolerance.setValue(1.0)
+        self.simplify_tolerance.setSingleStep(0.1)
+        self.simplify_tolerance.setEnabled(self.do_simplify.isChecked())
+        params_layout.addRow("Simplify Tolerance:", self.simplify_tolerance)
+
+        # Connect checkbox to enable/disable simplify tolerance
+        self.do_simplify.toggled.connect(self.simplify_tolerance.setEnabled)
+
+        params_group.setLayout(params_layout)
+        layout.addWidget(params_group)
+
+        # Buttons
+        button_box = QHBoxLayout()
+        self.apply_button = QPushButton("Apply")
+        self.cancel_button = QPushButton("Cancel")
+        self.apply_button.clicked.connect(self.accept)
+        self.cancel_button.clicked.connect(self.reject)
+        button_box.addWidget(self.apply_button)
+        button_box.addWidget(self.cancel_button)
+        layout.addLayout(button_box)
+
+        self.setLayout(layout)
+
+    def get_parameters(self):
+        return {
+            'buffer_distance': self.buffer_distance.value(),
+            'interpolation': self.interpolation.value(),
+            'merge_polygons': self.merge_polygons.isChecked(),
+            'do_simplify': self.do_simplify.isChecked(),
+            'simplify_tolerance': self.simplify_tolerance.value()
+        }
+class CleanLinesDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Clean Lines Parameters")
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+
+        # Create parameter groups
+        params_group = QGroupBox("Parameters")
+        params_layout = QFormLayout()
+
+        # Snap tolerance
+        self.snap_tolerance = QSlider(Qt.Horizontal)
+        self.snap_tolerance.setRange(0, 20)
+        self.snap_tolerance.setValue(5)
+        self.snap_tolerance_label = QLabel("5")
+        self.snap_tolerance.valueChanged.connect(
+            lambda v: self.snap_tolerance_label.setText(str(v)))
+        params_layout.addRow("Snap Tolerance:", self.snap_tolerance)
+        params_layout.addRow("", self.snap_tolerance_label)
+
+        # Buffer merge checkbox and distance
+        self.do_buffer = QCheckBox("Enable Buffer Merge")
+        self.buffer_dist = QSlider(Qt.Horizontal)
+        self.buffer_dist.setRange(1, 50)
+        self.buffer_dist.setValue(2)
+        self.buffer_dist.setEnabled(False)
+        self.buffer_dist_label = QLabel("2.0")
+        self.do_buffer.toggled.connect(self.buffer_dist.setEnabled)
+        self.buffer_dist.valueChanged.connect(
+            lambda v: self.buffer_dist_label.setText(f"{v/10:.1f}"))
+        params_layout.addRow("", self.do_buffer)
+        params_layout.addRow("Buffer Distance:", self.buffer_dist)
+        params_layout.addRow("", self.buffer_dist_label)
+
+        # Minimum length
+        self.min_length = QSlider(Qt.Horizontal)
+        self.min_length.setRange(1, 50)
+        self.min_length.setValue(5)
+        self.min_length_label = QLabel("5")
+        self.min_length.valueChanged.connect(
+            lambda v: self.min_length_label.setText(str(v)))
+        params_layout.addRow("Minimum Length:", self.min_length)
+        params_layout.addRow("", self.min_length_label)
+
+        # Other checkboxes
+        self.do_fragmentation = QCheckBox("Resolve Artificial Fragmentation")
+        self.do_fragmentation.setChecked(True)
+        params_layout.addRow("", self.do_fragmentation)
+
+        self.do_angle = QCheckBox("Enable Angle-Based Merge")
+        self.angle_threshold = QSlider(Qt.Horizontal)
+        self.angle_threshold.setRange(1, 45)
+        self.angle_threshold.setValue(10)
+        self.angle_threshold.setEnabled(False)
+        self.angle_threshold_label = QLabel("10°")
+        self.do_angle.toggled.connect(self.angle_threshold.setEnabled)
+        self.angle_threshold.valueChanged.connect(
+            lambda v: self.angle_threshold_label.setText(f"{v}°"))
+        params_layout.addRow("", self.do_angle)
+        params_layout.addRow("Angle Threshold:", self.angle_threshold)
+        params_layout.addRow("", self.angle_threshold_label)
+
+        self.do_merge = QCheckBox("Merge Connected Components")
+        self.do_merge.setChecked(True)
+        params_layout.addRow("", self.do_merge)
+
+        self.do_simplify = QCheckBox("Simplify Lines")
+        self.simplify_tolerance = QSlider(Qt.Horizontal)
+        self.simplify_tolerance.setRange(1, 50)
+        self.simplify_tolerance.setValue(10)
+        self.simplify_tolerance.setEnabled(False)
+        self.simplify_tolerance_label = QLabel("1.0")
+        self.do_simplify.toggled.connect(self.simplify_tolerance.setEnabled)
+        self.simplify_tolerance.valueChanged.connect(
+            lambda v: self.simplify_tolerance_label.setText(f"{v/10:.1f}"))
+        params_layout.addRow("", self.do_simplify)
+        params_layout.addRow("Simplify Tolerance:", self.simplify_tolerance)
+        params_layout.addRow("", self.simplify_tolerance_label)
+
+        params_group.setLayout(params_layout)
+        layout.addWidget(params_group)
+
+        # Buttons
+        button_box = QHBoxLayout()
+        self.apply_button = QPushButton("Apply")
+        self.cancel_button = QPushButton("Cancel")
+        self.apply_button.clicked.connect(self.accept)
+        self.cancel_button.clicked.connect(self.reject)
+        button_box.addWidget(self.apply_button)
+        button_box.addWidget(self.cancel_button)
+        layout.addLayout(button_box)
+
+        self.setLayout(layout)
+
+    def get_parameters(self):
+        return {
+            'snap_tolerance': self.snap_tolerance.value(),
+            'do_buffer_merge': self.do_buffer.isChecked(),
+            'buffer_dist': self.buffer_dist.value() / 10.0,
+            'min_length': self.min_length.value(),
+            'do_artificial_fragmentation': self.do_fragmentation.isChecked(),
+            'do_angle_based_merge': self.do_angle.isChecked(),
+            'angle_threshold_degs': self.angle_threshold.value(),
+            'do_merge_components': self.do_merge.isChecked(),
+            'do_simplify': self.do_simplify.isChecked(),
+            'simplify_tolerance': self.simplify_tolerance.value() / 10.0
+        }
 class ManualInterpretationWindow(QDialog):
     def __init__(self, original_image, filtered_image, parent=None):
         super().__init__(parent)
@@ -1181,6 +1371,25 @@ class ManualInterpretationWindow(QDialog):
         self.view.setRenderHint(QPainter.Antialiasing)
         self.view.setDragMode(QGraphicsView.NoDrag)  # Ensure no interference with item interactions
         layout.addWidget(self.view)
+        # Create toolbar
+        self.toolbar = QToolBar()
+        layout.addWidget(self.toolbar)
+
+        # Add Clean Lines button to toolbar
+        clean_lines_button = QPushButton("Clean Lines")
+        clean_lines_button.clicked.connect(self.clean_lines)
+        self.toolbar.addWidget(clean_lines_button)
+        
+        # Add a separator in toolbar
+        self.toolbar.addSeparator()
+
+        # Add Centerline button to toolbar
+        centerline_button = QPushButton("Extract Centerlines")
+        centerline_button.clicked.connect(self.extract_centerlines)
+        self.toolbar.addWidget(centerline_button)
+        
+        # Add a separator in toolbar
+        self.toolbar.addSeparator()
 
         # Display the original image
         self.show_original_image()
@@ -1278,6 +1487,8 @@ class ManualInterpretationWindow(QDialog):
         # Add morphological controls layout
         morpho_layout = QHBoxLayout()
         
+        
+
         # Merge parallel lines checkbox and slider
         self.merge_lines_checkbox = QCheckBox("Merge Parallel Lines")
         self.merge_lines_checkbox.stateChanged.connect(self.update_line_merging)
@@ -1330,8 +1541,245 @@ class ManualInterpretationWindow(QDialog):
        # Install both event filters
         self.view.viewport().installEventFilter(self)
         self.view.viewport().setMouseTracking(True)
- 
-    # Add these new methods
+    def extract_centerlines(self):
+        """Extract centerlines from the current lines"""
+        try:
+            # Open dialog to get parameters
+            dialog = CenterlineDialog(self)
+            if dialog.exec_() != QDialog.Accepted:
+                return
+
+            params = dialog.get_parameters()
+            
+            print("Starting centerline extraction with parameters:", params)
+            
+            # Convert current lines to GeoDataFrame
+            lines = []
+            for item in self.scene.items():
+                if isinstance(item, LineItem):
+                    coords = [(float(p[0]), float(p[1])) for p in item.path_points]
+                    if len(coords) >= 2:
+                        try:
+                            line = LineString(coords)
+                            if not line.is_empty:
+                                lines.append(line)
+                        except Exception as e:
+                            print(f"Warning: Skipping invalid line: {str(e)}")
+            
+            if not lines:
+                QMessageBox.warning(self, "Warning", "No valid lines to process.")
+                return
+
+            print(f"Found {len(lines)} lines to process")
+
+            # Create GeoDataFrame
+            gdf_lines = gpd.GeoDataFrame(geometry=lines)
+            
+            # Buffer the lines
+            print(f"Buffering lines with distance {params['buffer_distance']}")
+            gdf_polygons = gdf_lines.copy()
+            gdf_polygons["geometry"] = gdf_polygons["geometry"].buffer(params['buffer_distance'], join_style=2)
+
+            # Merge all polygons
+            print("Merging all buffered polygons")
+            merged_poly = gdf_polygons.unary_union
+
+            # Extract centerlines from the merged polygon
+            centerline_geoms = []
+            try:
+                if merged_poly.geom_type == "Polygon":
+                    cl = Centerline(merged_poly, interpolation=params['interpolation'])
+                    if cl.geometry is not None and not cl.geometry.is_empty:
+                        centerline_geoms.append(cl.geometry)
+                elif merged_poly.geom_type == "MultiPolygon":
+                    for poly in merged_poly.geoms:
+                        cl = Centerline(poly, interpolation=params['interpolation'])
+                        if cl.geometry is not None and not cl.geometry.is_empty:
+                            centerline_geoms.append(cl.geometry)
+            except Exception as e:
+                print(f"Warning: Failed to extract centerline: {str(e)}")
+
+            if not centerline_geoms:
+                QMessageBox.warning(self, "Warning", "No centerlines could be extracted.")
+                return
+
+            # Merge all centerline geometries
+            all_centerlines = unary_union(centerline_geoms)
+            
+            # If it's a MultiLineString, try to merge into continuous lines
+            if all_centerlines.geom_type == 'MultiLineString':
+                all_centerlines = linemerge(all_centerlines)
+
+            # Simplify if requested
+            if params['do_simplify']:
+                if all_centerlines.geom_type == 'LineString':
+                    all_centerlines = all_centerlines.simplify(params['simplify_tolerance'], preserve_topology=True)
+                elif all_centerlines.geom_type == 'MultiLineString':
+                    simplified_parts = [part.simplify(params['simplify_tolerance'], preserve_topology=True) 
+                                    for part in all_centerlines.geoms]
+                    all_centerlines = MultiLineString(simplified_parts)
+
+            # Clear existing lines
+            for item in self.scene.items():
+                if isinstance(item, LineItem):
+                    self.scene.removeItem(item)
+
+            # Add centerlines to scene
+            lines_added = 0
+            if all_centerlines.geom_type == 'LineString':
+                self.add_cleaned_line(list(all_centerlines.coords))
+                lines_added += 1
+            elif all_centerlines.geom_type == 'MultiLineString':
+                for line in all_centerlines.geoms:
+                    self.add_cleaned_line(list(line.coords))
+                    lines_added += 1
+
+            print(f"Added {lines_added} continuous centerlines to scene")
+            QMessageBox.information(self, "Success", f"Centerlines extracted successfully! Added {lines_added} continuous lines.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to extract centerlines: {str(e)}")
+            print(f"Error extracting centerlines: {str(e)}")
+            traceback.print_exc()
+        # Add these new methods
+    def clean_lines(self):
+        """Clean the lines using the line cleaning algorithm"""
+        try:
+            # Open dialog to get parameters
+            dialog = CleanLinesDialog(self)
+            if dialog.exec_() != QDialog.Accepted:
+                return
+
+            params = dialog.get_parameters()
+            
+            # Convert current lines to GeoDataFrame
+            lines = []
+            # Print the number of items in the scene for debugging
+            print(f"Total items in scene: {len(self.scene.items())}")
+            
+            for item in self.scene.items():
+                # Print item type for debugging
+                print(f"Item type: {type(item)}")
+                
+                if isinstance(item, LineItem):
+                    print(f"Found LineItem with {len(item.path_points)} points")
+                    # Check if path_points exists and has valid coordinates
+                    if hasattr(item, 'path_points') and item.path_points:
+                        coords = []
+                        for p in item.path_points:
+                            try:
+                                # Ensure coordinates are valid numbers
+                                x, y = float(p[0]), float(p[1])
+                                coords.append((x, y))
+                            except (ValueError, TypeError) as e:
+                                print(f"Invalid coordinate: {p}, Error: {e}")
+                                continue
+                                
+                        if len(coords) >= 2:
+                            try:
+                                line = LineString(coords)
+                                if not line.is_empty:
+                                    lines.append(line)
+                                    print(f"Added valid line with {len(coords)} points")
+                            except Exception as e:
+                                print(f"Failed to create LineString: {e}")
+                    else:
+                        print("LineItem has no path_points or they are empty")
+            
+            print(f"Found {len(lines)} valid lines to clean")
+            
+            if not lines:
+                QMessageBox.warning(self, "Warning", "No valid lines to clean.")
+                return
+
+            # Create GeoDataFrame
+            gdf = gpd.GeoDataFrame(geometry=lines)
+            
+            # Apply cleaning operations
+            if params['snap_tolerance'] > 0:
+                gdf = snap_line_endpoints(gdf, params['snap_tolerance'])
+
+            if params['do_buffer_merge']:
+                gdf = buffer_and_merge_lines(gdf, params['buffer_dist'])
+
+            # Build graph and clean
+            G = lines_to_graph(gdf)
+            remove_short_edges(G, params['min_length'])
+
+            if params['do_artificial_fragmentation']:
+                all_chains = resolve_artificial_fragmentation(G)
+                chain_lines = [LineString(chain) for chain in all_chains]
+                gdf = gpd.GeoDataFrame(geometry=chain_lines)
+                G = lines_to_graph(gdf)
+
+            if params['do_angle_based_merge']:
+                while merge_lines_by_angle(G, params['angle_threshold_degs']) > 0:
+                    pass
+
+            if params['do_merge_components']:
+                merged_list = merge_connected_edges(G)
+            else:
+                merged_list = graph_to_lines(G)
+
+            if params['do_simplify']:
+                merged_list = simplify_lines(merged_list, params['simplify_tolerance'])
+
+            if not merged_list:
+                QMessageBox.warning(self, "Warning", "No lines remained after cleaning.")
+                return
+
+            # Clear existing lines
+            for item in self.scene.items():
+                if isinstance(item, LineItem):
+                    self.scene.removeItem(item)
+
+            # Add cleaned lines
+            for geom in merged_list:
+                if geom.geom_type == 'LineString':
+                    self.add_cleaned_line(list(geom.coords))
+                elif geom.geom_type == 'MultiLineString':
+                    for line in geom.geoms:
+                        self.add_cleaned_line(list(line.coords))
+
+            QMessageBox.information(self, "Success", "Lines cleaned successfully!")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to clean lines: {str(e)}")
+            print(f"Error cleaning lines: {str(e)}")
+            traceback.print_exc()
+
+    def add_cleaned_line(self, coords):
+        """Add a cleaned line to the scene with all necessary properties"""
+        try:
+            line_item = LineItem()
+            
+            # Ensure coordinates are valid and stored as tuples
+            line_item.path_points = [(float(x), float(y)) for x, y in coords]
+            
+            # Set up pen and selection properties
+            line_item.setPen(QPen(Qt.blue, 2, Qt.SolidLine))
+            line_item.setFlag(QGraphicsItem.ItemIsSelectable)
+            line_item.setFlag(QGraphicsItem.ItemIsMovable)
+            
+            # Make sure the line is visible and interactive
+            line_item.setVisible(True)
+            line_item.setEnabled(True)
+            
+            # Update the path
+            line_item.updatePath()
+            
+            # Add to scene
+            self.scene.addItem(line_item)
+            
+            # If you have any line tracking or management
+            if hasattr(self, 'lines'):
+                self.lines.append(line_item)
+            
+            print(f"Added new line with {len(coords)} points")
+            return line_item
+        except Exception as e:
+            print(f"Warning: Failed to add cleaned line: {str(e)}")
+            return None
     def load_shapefile(self):
         """Load and display vector shapefile"""
         try:
